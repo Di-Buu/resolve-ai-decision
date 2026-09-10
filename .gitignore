@@ -1,0 +1,17 @@
+.env
+.env.*
+!.env.example
+node_modules/
+npm-debug.log*
+evals/results/
+evals/resolvebench_holdout.json
+data/
+career/
+AGENTS.md
+docs/01_产品概览.md
+docs/03_页面状态与交互规则.md
+docs/05_迭代记录.md
+docs/06_目标用户走查计划.md
+docs/07_项目案例说明.md
+docs/08_模型选型与调用策略.md
+prototype/README.md

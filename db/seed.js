@@ -1,0 +1,178 @@
+const sampleDecision = {
+  id: "sample-ai-refund",
+  title: "双十一 AI 自动退款上线方案",
+  sourceText: "双十一前我们希望上线 AI 自动退款。业务希望尽可能全自动，研发表示完整版本至少需要四周，现在只有两周，风控要求 500 元以上退款必须人工审核。",
+  scenario: "work_product",
+  ownerName: "产品负责人",
+  status: "active",
+  currentStage: "collect",
+  deadline: "双十一前两周",
+  isSample: true,
+  participants: [
+    { id: "sample-product", name: "产品负责人", role: "决策负责人", submissionStatus: "confirmed" },
+    { id: "sample-business", name: "业务负责人", role: "业务意见方", submissionStatus: "confirmed" },
+    { id: "sample-engineering", name: "研发负责人", role: "技术意见方", submissionStatus: "pending" },
+    { id: "sample-risk", name: "风控负责人", role: "风险意见方", submissionStatus: "confirmed" },
+  ],
+  artifacts: [
+    {
+      id: "sample-analysis",
+      type: "analysis",
+      status: "confirmed",
+      payload: {
+        title: "双十一 AI 自动退款上线方案",
+        goal: "在双十一前确定自动退款的首期上线范围，同时控制误退款风险。",
+        decisionQuestion: "第一版自动退款应该覆盖哪些场景？",
+        participants: ["产品负责人", "业务负责人", "研发负责人", "风控负责人"],
+        constraints: [
+          { statement: "两周内需要上线一版可用能力", type: "soft", evidenceNeeded: false },
+          { statement: "500 元以上退款必须人工审核", type: "hard", evidenceNeeded: false },
+          { statement: "完整能力至少需要四周", type: "assumption", evidenceNeeded: true },
+        ],
+        informationGaps: ["500 元以下退款的请求占比", "风险分类模块的真实工期"],
+      },
+    },
+    {
+      id: "sample-diagnosis",
+      type: "diagnosis",
+      status: "confirmed",
+      payload: {
+        demandAssessment: {
+          summary: "客服压力已经存在，但还不能证明第一版必须覆盖全部退款场景。",
+          evidenceStatus: "部分信息足够",
+          recommendation: "继续讨论更小的上线范围，并补充低金额退款占比。",
+        },
+        conflicts: [
+          {
+            id: "time-scope",
+            title: "功能范围与上线时间",
+            sideA: "完整自动退款预计需要 4 周",
+            sideB: "活动前只剩 2 周",
+            severity: "high",
+            status: "known",
+            evidenceNote: "研发估时仍需补充依据",
+          },
+          {
+            id: "automation-risk",
+            title: "自动化范围与风险控制",
+            sideA: "业务希望尽可能自动处理",
+            sideB: "500 元以上必须人工审核",
+            severity: "critical",
+            status: "known",
+            evidenceNote: "已确认风控规则",
+          },
+        ],
+        questions: [
+          {
+            id: "refund-share",
+            owner: "业务负责人",
+            question: "500 元以下退款占所有人工退款请求的比例是多少？",
+            why: "如果占比足够高，第一版只覆盖低风险场景也可能明显减少人工量。",
+          },
+        ],
+      },
+    },
+    {
+      id: "sample-proposals",
+      type: "proposals",
+      status: "confirmed",
+      payload: {
+        proposals: [
+          {
+            id: "A",
+            title: "完整能力优先",
+            summary: "延期两周，上线更完整的自动退款能力。",
+            tradeoff: "放弃活动前上线",
+            risk: "错过业务高峰期",
+            coverage: "high",
+            timeConfidence: "low",
+            riskControl: "medium",
+            assumptions: [],
+            meetsConstraints: false,
+          },
+          {
+            id: "B",
+            title: "规则白名单先行",
+            summary: "按期上线规则明确的低风险白名单，其余请求保持人工处理。",
+            tradeoff: "自动化覆盖率较低",
+            risk: "白名单覆盖率可能低于预期",
+            coverage: "low",
+            timeConfidence: "high",
+            riskControl: "high",
+            assumptions: ["已有规则足以识别低风险白名单"],
+            meetsConstraints: true,
+          },
+          {
+            id: "C",
+            title: "低风险分阶段上线",
+            summary: "低风险自动处理，高风险继续人工审核；活动后再扩大范围。",
+            tradeoff: "首期不追求全自动",
+            risk: "需要清晰的人工回退流程",
+            coverage: "medium",
+            timeConfidence: "medium",
+            riskControl: "high",
+            assumptions: ["低金额退款占比较高"],
+            meetsConstraints: true,
+          },
+        ],
+      },
+    },
+    {
+      id: "sample-validation",
+      type: "validation",
+      status: "confirmed",
+      payload: {
+        summary: "方案 B 和 C 可以进入审阅；方案 A 需要负责人明确接受延期。",
+        results: [
+          { proposalId: "A", status: "human_tradeoff", reason: "无法满足活动前上线。" },
+          { proposalId: "B", status: "pass", reason: "满足时间和金额风控要求。" },
+          { proposalId: "C", status: "pass", reason: "满足当前已确认的硬约束。" },
+        ],
+      },
+    },
+    {
+      id: "sample-objection-template",
+      type: "objection_template",
+      status: "confirmed",
+      payload: {
+        category: "assumption_invalidated",
+        summary: "风险分类模块实际需要三周，原有工期假设不成立。",
+        affectedProposalIds: ["B"],
+        invalidatedAssumptions: ["风险分类可以在两周内完成"],
+        recommendedAction: "只更新方案 B，并重新检查时间约束。",
+      },
+    },
+    {
+      id: "sample-review-product",
+      type: "review:sample-product",
+      status: "confirmed",
+      payload: {
+        participantId: "sample-product",
+        status: "accept",
+        note: "同意先以可控范围上线，并保留后续扩大空间。",
+      },
+    },
+    {
+      id: "sample-review-business",
+      type: "review:sample-business",
+      status: "confirmed",
+      payload: {
+        participantId: "sample-business",
+        status: "concern",
+        note: "可以接受，但需要持续关注首期自动化覆盖率。",
+      },
+    },
+    {
+      id: "sample-review-risk",
+      type: "review:sample-risk",
+      status: "confirmed",
+      payload: {
+        participantId: "sample-risk",
+        status: "accept",
+        note: "高金额退款继续人工审核，可以接受。",
+      },
+    },
+  ],
+};
+
+module.exports = { sampleDecision };

@@ -1,0 +1,127 @@
+{
+  "version": "0.1.0",
+  "purpose": "验证问题结构化模块是否稳定产出可确认的决策对象，不评估完整 Resolve 流程。",
+  "cases": [
+    {
+      "id": "RB-001",
+      "title": "自动退款上线范围",
+      "input": "双十一前希望上线 AI 自动退款。业务希望尽可能全自动，研发表示完整版本至少需要四周，现在只有两周，风控要求 500 元以上退款必须人工审核。",
+      "expect": {
+        "min_participants": 3,
+        "min_conflicts": 2,
+        "min_information_gaps": 1,
+        "constraint_types_any": ["hard", "assumption"],
+        "keyword_groups": [["时间", "两周", "双十一"], ["风险", "风控", "审核"], ["自动", "范围"]]
+      }
+    },
+    {
+      "id": "RB-002",
+      "title": "大客户定制审批",
+      "input": "一家大客户承诺签约，但要求两个月内增加专属审批流程。销售认为必须答应，产品担心破坏标准化，研发估算要占用一半迭代资源。",
+      "expect": {
+        "min_participants": 3,
+        "min_conflicts": 2,
+        "min_information_gaps": 1,
+        "constraint_types_any": ["soft", "assumption"],
+        "keyword_groups": [["客户", "签约", "收入"], ["标准", "定制"], ["资源", "研发", "成本"]]
+      }
+    },
+    {
+      "id": "RB-003",
+      "title": "模型效果成本延迟",
+      "input": "更强模型能把回答准确率从 78% 提升到 86%，但单次成本约翻倍，P95 响应时间也从 3 秒增加到 9 秒。我们需要确定默认模型和降级策略。",
+      "expect": {
+        "min_participants": 2,
+        "min_conflicts": 2,
+        "min_information_gaps": 1,
+        "constraint_types_any": ["soft", "assumption"],
+        "keyword_groups": [["准确", "效果", "质量"], ["成本"], ["延迟", "响应", "速度"]]
+      }
+    },
+    {
+      "id": "RB-004",
+      "title": "延期项目的首期范围",
+      "input": "核心客户要求月底前看到新版数据看板，但完整设计还需要六周。客户成功希望功能齐全，研发只能保证三个核心指标，管理层不接受再次延期。",
+      "expect": {
+        "min_participants": 3,
+        "min_conflicts": 2,
+        "min_information_gaps": 1,
+        "constraint_types_any": ["hard", "soft"],
+        "keyword_groups": [["月底", "时间", "延期"], ["范围", "功能", "指标"], ["客户", "管理层"]]
+      }
+    },
+    {
+      "id": "RB-005",
+      "title": "个性化与隐私边界",
+      "input": "增长团队希望使用用户对话内容做个性化推荐，预计能提升留存；法务要求没有明确授权的数据不得用于画像，算法团队认为只用行为数据效果有限。",
+      "expect": {
+        "min_participants": 3,
+        "min_conflicts": 2,
+        "min_information_gaps": 1,
+        "constraint_types_any": ["hard", "assumption"],
+        "keyword_groups": [["隐私", "授权", "法务"], ["个性", "推荐"], ["留存", "效果"]]
+      }
+    },
+    {
+      "id": "RB-006",
+      "title": "高风险实验流量",
+      "input": "产品希望直接给 50% 用户上线新搜索排序以尽快得到显著结果，数据团队建议先从 5% 开始，运维担心错误排序会影响大客户续约。",
+      "expect": {
+        "min_participants": 3,
+        "min_conflicts": 2,
+        "min_information_gaps": 1,
+        "constraint_types_any": ["soft", "assumption"],
+        "keyword_groups": [["流量", "50%", "5%"], ["风险", "错误"], ["实验", "显著", "结果"]]
+      }
+    },
+    {
+      "id": "RB-007",
+      "title": "无障碍缺陷与发布日期",
+      "input": "新版编辑器已经宣布下周发布，但键盘导航仍有严重缺陷。市场不愿更改发布日期，无障碍负责人认为关键流程不达标就不能上线。",
+      "expect": {
+        "min_participants": 3,
+        "min_conflicts": 2,
+        "min_information_gaps": 1,
+        "constraint_types_any": ["hard", "soft"],
+        "keyword_groups": [["无障碍", "键盘"], ["发布", "日期", "下周"], ["缺陷", "达标"]]
+      }
+    },
+    {
+      "id": "RB-008",
+      "title": "数据库迁移策略",
+      "input": "旧数据库成本持续上升，架构团队建议本季度完成迁移。业务要求迁移期间零停机，研发只有两个人可投入，目前没有完整回滚演练。",
+      "expect": {
+        "min_participants": 3,
+        "min_conflicts": 2,
+        "min_information_gaps": 1,
+        "constraint_types_any": ["hard", "assumption"],
+        "keyword_groups": [["迁移", "数据库"], ["停机", "回滚", "风险"], ["资源", "两个人"]]
+      }
+    },
+    {
+      "id": "RB-009",
+      "title": "SLA 与工程容量",
+      "input": "销售准备向新客户承诺 99.99% SLA，但当前系统过去三个月只有 99.9%，工程团队认为至少要先完成容灾改造，销售担心延迟签约。",
+      "expect": {
+        "min_participants": 3,
+        "min_conflicts": 2,
+        "min_information_gaps": 1,
+        "constraint_types_any": ["hard", "assumption"],
+        "keyword_groups": [["SLA", "可用性", "99.99"], ["容灾", "工程"], ["签约", "销售"]]
+      }
+    },
+    {
+      "id": "RB-010",
+      "title": "信息不足的 AI 助手需求",
+      "input": "团队想在产品里加入一个 AI 助手，但目标用户、具体任务、成功指标、允许成本和上线时间都还没有确定，现在需要判断下一步怎么做。",
+      "expect": {
+        "min_participants": 2,
+        "min_conflicts": 1,
+        "min_information_gaps": 3,
+        "constraint_types_any": ["assumption"],
+        "next_steps_any": ["collect_evidence", "reframe_decision"],
+        "keyword_groups": [["用户"], ["任务", "场景"], ["指标", "成功"], ["成本", "时间"]]
+      }
+    }
+  ]
+}

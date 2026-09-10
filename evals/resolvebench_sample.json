@@ -1,0 +1,40 @@
+{
+  "version": "0.1.0-sample",
+  "purpose": "公开展示 ResolveBench 的案例结构和规则检查方式，不承担保留集功能。",
+  "cases": [
+    {
+      "id": "SAMPLE-001",
+      "title": "自动退款上线范围",
+      "input": "双十一前希望上线 AI 自动退款。业务希望尽可能全自动，研发表示完整版本至少需要四周，现在只有两周，风控要求 500 元以上退款必须人工审核。",
+      "expect": {
+        "min_participants": 3,
+        "min_conflicts": 2,
+        "min_information_gaps": 1,
+        "constraint_types_any": ["hard", "assumption"],
+        "keyword_groups": [
+          ["时间", "两周", "双十一"],
+          ["风险", "风控", "审核"],
+          ["自动", "范围"]
+        ]
+      }
+    },
+    {
+      "id": "SAMPLE-002",
+      "title": "信息不足的 AI 助手需求",
+      "input": "团队想在产品里加入一个 AI 助手，但目标用户、具体任务、成功指标、允许成本和上线时间都还没有确定，现在需要判断下一步怎么做。",
+      "expect": {
+        "min_participants": 2,
+        "min_conflicts": 1,
+        "min_information_gaps": 3,
+        "constraint_types_any": ["assumption"],
+        "next_steps_any": ["collect_evidence", "reframe_decision"],
+        "keyword_groups": [
+          ["用户"],
+          ["任务", "场景"],
+          ["指标", "成功"],
+          ["成本", "时间"]
+        ]
+      }
+    }
+  ]
+}

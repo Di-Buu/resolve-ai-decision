@@ -1,0 +1,21 @@
+{
+  "name": "resolve-ai-decision-prototype",
+  "version": "0.7.0",
+  "private": true,
+  "description": "Resolve AI 协作决策平台本地 MVP",
+  "scripts": {
+    "start": "node --env-file=.env server.js",
+    "check": "node --check server.js && node --check ai.js && node --check db/database.js && node --check db/seed.js && node --check prototype/app.js && node --check evals/run-smoke.js && node --check evals/run-flow.js && node --check evals/run-baseline.js && node --check scripts/public-check.js && node --check tests/api.test.js",
+    "test": "node --test tests/api.test.js",
+    "eval:smoke": "node --env-file=.env evals/run-smoke.js",
+    "eval:flow": "node --env-file=.env evals/run-flow.js",
+    "eval:baseline": "node --env-file=.env evals/run-baseline.js",
+    "public:check": "node scripts/public-check.js"
+  },
+  "dependencies": {
+    "better-sqlite3": "^12.2.0"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}
