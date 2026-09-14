@@ -23,7 +23,7 @@ const STAGE_TRANSITIONS = {
   conflict: new Set(["conflict", "clarify", "proposals"]),
   clarify: new Set(["clarify", "conflict", "proposals"]),
   proposals: new Set(["proposals", "conflict", "review"]),
-  review: new Set(["review", "proposals", "final"]),
+  review: new Set(["review", "conflict", "proposals", "final"]),
   final: new Set(["final"]),
 };
 
@@ -71,7 +71,10 @@ function createDatabase(options = {}) {
     VALUES (?, ?, ?, ?, ?)
   `);
 
-  const seed = db.transaction(() => {
+  const seed = db.transaction((forceReset = false) => {
+    if (forceReset) {
+      db.prepare("DELETE FROM decisions WHERE id = ? AND is_sample = 1").run(sampleDecision.id);
+    }
     const exists = db.prepare("SELECT 1 FROM decisions WHERE id = ?").get(sampleDecision.id);
     const createdAt = isoNow();
     if (!exists) {
@@ -314,6 +317,11 @@ function createDatabase(options = {}) {
     return createDecisionTx({ ...input, sourceText: input.sourceText.trim() });
   }
 
+  function resetSample() {
+    seed(true);
+    return getDecision(sampleDecision.id);
+  }
+
   const addEventTx = db.transaction((decisionId, event) => {
     const decision = db.prepare("SELECT id, owner_name, current_stage FROM decisions WHERE id = ?").get(decisionId);
     if (!decision) return null;
@@ -347,7 +355,7 @@ function createDatabase(options = {}) {
       db.prepare("UPDATE decisions SET current_stage = ?, updated_at = ? WHERE id = ?").run(nextStage, createdAt, decisionId);
     }
     if (event.type === "clarification_answered") {
-      if (!["conflict", "clarify"].includes(decision.current_stage)) throw new Error("当前进度还不能补充澄清信息。");
+      if (!["conflict", "clarify", "review"].includes(decision.current_stage)) throw new Error("当前进度还不能补充信息。");
       const answers = Array.isArray(payload.answers)
         ? payload.answers.map((item) => ({ questionId: String(item.questionId || ""), answer: String(item.answer || "").trim() })).filter((item) => item.answer)
         : [{ questionId: payload.questionId, answer: String(payload.answer || "").trim() }];
@@ -446,6 +454,7 @@ function createDatabase(options = {}) {
     listDecisions,
     getDecision,
     createDecision,
+    resetSample,
     addEvent,
     saveArtifact,
     latestArtifact,

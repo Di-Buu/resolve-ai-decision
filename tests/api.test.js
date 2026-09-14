@@ -63,17 +63,18 @@ test("SQLite API supports creation, guardrails, events, and restart recovery", a
   });
   assert.equal(cannotSkipStages.response.status, 409);
 
+  const productId = sample.payload.decision.participants.find((item) => item.name === "产品负责人").id;
   const engineeringId = sample.payload.decision.participants.find((item) => item.name === "研发负责人").id;
   const confirmed = await request(baseUrl, "/api/decisions/sample-ai-refund/events", {
     method: "POST",
     body: JSON.stringify({
       type: "participant_confirmed",
-      actor: "研发负责人",
-      payload: { participantId: engineeringId, text: "两周内只能完成低风险范围，并保留人工回退。" },
+      actor: "产品负责人",
+      payload: { participantId: productId, text: "希望活动前上线一版能减少客服压力的能力，但不能突破风险底线。" },
     }),
   });
   assert.equal(confirmed.response.status, 200);
-  assert.ok(confirmed.payload.decision.artifacts.some((item) => item.type === `viewpoint:${engineeringId}`));
+  assert.ok(confirmed.payload.decision.artifacts.some((item) => item.type === `viewpoint:${productId}`));
 
   const triageStage = await request(baseUrl, "/api/decisions/sample-ai-refund/events", {
     method: "POST",
@@ -148,6 +149,30 @@ test("SQLite API supports creation, guardrails, events, and restart recovery", a
   });
   assert.equal(processed.response.status, 200);
 
+  const objectionEvidence = await request(baseUrl, "/api/decisions/sample-ai-refund/events", {
+    method: "POST",
+    body: JSON.stringify({
+      type: "clarification_answered",
+      actor: "研发负责人",
+      payload: { answers: [{ questionId: "objection-evidence", answer: "研发拆分任务后确认至少需要三周。" }] },
+    }),
+  });
+  assert.equal(objectionEvidence.response.status, 200);
+  assert.equal(objectionEvidence.payload.decision.currentStage, "clarify");
+
+  const returnToProposals = await request(baseUrl, "/api/decisions/sample-ai-refund/events", {
+    method: "POST",
+    body: JSON.stringify({ type: "stage_changed", actor: "Resolve", payload: { stage: "proposals" } }),
+  });
+  assert.equal(returnToProposals.response.status, 200);
+
+  const keepSelection = await request(baseUrl, "/api/decisions/sample-ai-refund/events", {
+    method: "POST",
+    body: JSON.stringify({ type: "proposal_selected", actor: "产品负责人", payload: { proposalId: "C" } }),
+  });
+  assert.equal(keepSelection.response.status, 200);
+  assert.equal(keepSelection.payload.decision.currentStage, "review");
+
   const finalRecord = {
     decision: "低风险分阶段上线",
     why: "满足已确认的风险边界和上线目标。",
@@ -187,6 +212,17 @@ test("SQLite API supports creation, guardrails, events, and restart recovery", a
   assert.equal(completed.payload.decision.status, "complete");
   assert.equal(completed.payload.decision.currentStage, "final");
 
+  const resetSample = await request(baseUrl, "/api/decisions/sample-ai-refund/reset", {
+    method: "POST",
+    body: "{}",
+  });
+  assert.equal(resetSample.response.status, 200);
+  assert.equal(resetSample.payload.decision.status, "active");
+  assert.equal(resetSample.payload.decision.currentStage, "collect");
+  assert.equal(resetSample.payload.decision.participants.filter((item) => item.submissionStatus === "pending").length, 1);
+  assert.equal(resetSample.payload.decision.participants.find((item) => item.submissionStatus === "pending").name, "产品负责人");
+  assert.equal(resetSample.payload.decision.artifacts.some((item) => item.type === "selection"), false);
+
   const created = await request(baseUrl, "/api/decisions", {
     method: "POST",
     body: JSON.stringify({
@@ -208,7 +244,8 @@ test("SQLite API supports creation, guardrails, events, and restart recovery", a
   await new Promise((resolve) => server.close(resolve));
   database.close();
   const reopened = createDatabase({ dbPath });
-  assert.equal(reopened.getDecision("sample-ai-refund").status, "complete");
+  assert.equal(reopened.getDecision("sample-ai-refund").status, "active");
+  assert.equal(reopened.getDecision("sample-ai-refund").currentStage, "collect");
   assert.equal(reopened.getDecision(created.payload.decision.id).title, "默认模型选择");
   reopened.close();
 });

@@ -93,6 +93,10 @@ function createServer(options = {}) {
         return sendJson(response, 201, { decision: database.createDecision(body) });
       }
 
+      if (request.method === "POST" && url.pathname === "/api/decisions/sample-ai-refund/reset") {
+        return sendJson(response, 200, { decision: database.resetSample() });
+      }
+
       const decisionMatch = url.pathname.match(/^\/api\/decisions\/([^/]+)$/);
       if (request.method === "GET" && decisionMatch) {
         const decision = database.getDecision(decodeURIComponent(decisionMatch[1]));
