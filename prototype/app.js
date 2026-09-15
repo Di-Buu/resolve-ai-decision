@@ -11,6 +11,10 @@ const sampleReviewDefaults = {
   "sample-business": { status: "concern", note: "可以接受，但需要关注第一版到底能减少多少人工退款。" },
   "sample-risk": { status: "accept", note: "高金额退款继续人工审核，可以接受。" },
 };
+const sampleClarificationAnswers = {
+  "refund-share": "最近三个月的数据里，500 元以下退款约占全部人工退款的 92%。",
+  "classifier-timing": "研发最初拆分为规则整理 2 天、开发联调 5 天、测试 2 天、缓冲 1 天，共 10 个工作日；按当时已知范围可以在两周内完成。",
+};
 
 const reviewLabels = { accept: "接受", concern: "有顾虑，但可以接受", oppose: "反对" };
 const reviewTones = { accept: "green", concern: "amber", oppose: "red" };
@@ -47,11 +51,11 @@ const stageLabels = {
   conflict: "看看卡在哪里",
   clarify: "补充信息",
   proposals: "比较方案",
-  review: "处理异议",
+  review: "各方确认",
   final: "确认决定",
 };
 const stageOrder = Object.keys(stageLabels);
-const decisionScreens = new Set(["overview", "input", "triage", "conflict", "clarify", "explore", "review", "final"]);
+const decisionScreens = new Set(["overview", "input", "brief", "triage", "conflict", "clarify", "explore", "review", "final"]);
 const simpleScreens = new Set(["home", "work", "scene", "create"]);
 const stageScreens = {
   collect: "overview",
@@ -119,6 +123,18 @@ function artifact(type) {
   return [...(state.decision?.artifacts || [])].reverse().find((item) => item.type === type)?.payload || null;
 }
 
+function artifactEntry(type) {
+  return [...(state.decision?.artifacts || [])].reverse().find((item) => item.type === type) || null;
+}
+
+function artifacts(type) {
+  return (state.decision?.artifacts || []).filter((item) => item.type === type);
+}
+
+function inlineList(items) {
+  return (items || []).map((item) => String(item || "").trim().replace(/[。；;]+$/g, "")).filter(Boolean).join("；");
+}
+
 function reviewFor(participantId) {
   const review = artifact(`review:${participantId}`);
   return reviewLabels[review?.status] ? review : null;
@@ -166,6 +182,10 @@ function validationFor(proposalId) {
 }
 
 function displayValidationFor(proposalId) {
+  const invalidations = artifact("proposal_invalidations");
+  if (invalidations?.proposalIds?.includes(proposalId)) {
+    return { proposalId, status: "blocked", reason: invalidations.reasons?.[proposalId] || "新的信息已经让这个方案失效。" };
+  }
   const stored = artifact("objection_analysis");
   const active = stored?.active === false ? null : stored;
   if (active?.affectedProposalIds?.includes(proposalId)) {
@@ -218,7 +238,7 @@ function viewedStageIndex() {
 }
 
 function topbar() {
-  const labels = { home: "首页", work: "工作", scene: "产品与研发", create: "创建决策", overview: "决定总览", input: "收集观点", triage: "判断是否继续", conflict: "看看卡在哪里", clarify: "补充信息", explore: "比较方案", review: "处理异议", final: "确认决定" };
+  const labels = { home: "首页", work: "工作", scene: "产品与研发", create: "创建决策", overview: "决定总览", input: "收集观点", brief: "确认共同问题", triage: "判断是否继续", conflict: "看看卡在哪里", clarify: "补充信息", explore: "比较方案", review: "各方确认", final: "确认决定" };
   const location = labels[state.screen] || stageLabels[state.decision?.currentStage] || "这项决定";
   return `<header class="topbar"><button class="brand" data-action="home" aria-label="返回 Resolve 首页"><span class="brand-mark">R</span><span>Resolve</span></button><div class="top-actions"><span class="screen-count">${location}</span>${state.decision ? '<button class="text-button" data-action="overview">决策总览</button>' : ""}</div></header>`;
 }
@@ -239,13 +259,13 @@ function notice() {
 function shell(content) {
   const simple = ["home", "work", "scene", "create"].includes(state.screen);
   const demoBanner = state.decision?.isSample && !simple
-    ? `<section class="demo-banner"><div><span class="badge">预置演示</span><strong>示例内容已经准备好</strong><p>你可以直接确认每一步。先选方案 B，可以看到新信息怎样让原方案无法继续。</p></div><button class="secondary" data-action="reset-example">从头体验</button></section>`
+    ? `<section class="demo-banner"><div><span class="badge">预置演示</span><strong>示例内容已经准备好</strong><p>页面中的输入已经填写，你可以直接确认每一步，体验完整决策过程。</p></div><button class="secondary" data-action="reset-example">从头体验</button></section>`
     : "";
   return `<div class="app-shell">${topbar()}${notice()}${simple ? content : `<main class="workspace">${sidebar()}<section class="content">${demoBanner}${content}</section></main>`}</div>`;
 }
 
 function decisionCard(item) {
-  const status = item.status === "complete" ? "已完成" : item.currentStage === "collect" ? "收集中" : stageLabels[item.currentStage] || "进行中";
+  const status = item.status === "complete" ? "已完成" : item.status === "deferred" ? "暂缓中" : item.status === "rejected" ? "已结束" : item.status === "needs_evidence" ? "等待补充信息" : item.currentStage === "collect" ? "收集中" : stageLabels[item.currentStage] || "进行中";
   return `<button class="recent-card" data-action="open-decision" data-id="${item.id}"><div><span class="badge ${item.isSample ? "" : "muted"}">${item.isSample ? "继续示例" : status}</span><h3>${escapeHtml(item.title)}</h3><p>${item.isSample ? "保留上次体验进度" : `${item.confirmedCount}/${item.participantCount} 位参与者已确认观点`}</p></div><span class="recent-arrow">→</span></button>`;
 }
 
@@ -287,28 +307,75 @@ function renderOverview() {
   const percent = Math.round((confirmed / total) * 100);
   const nextPending = decision.participants.find((item) => item.submissionStatus !== "confirmed");
   const diagnosis = artifact("diagnosis");
+  const briefEntry = artifactEntry("decision_brief");
+  const briefConfirmed = briefEntry?.status === "confirmed";
   const complete = decision.status === "complete";
-  const nextAction = complete ? "final" : nextPending ? "select-participant" : decision.currentStage === "triage" ? "triage" : decision.currentStage === "conflict" || decision.currentStage === "clarify" ? "conflict" : decision.currentStage === "proposals" ? "explore" : decision.currentStage === "review" ? "review" : decision.currentStage === "final" ? "final" : "run-diagnose";
-  const nextLabel = complete ? "查看决定记录" : nextPending ? "确认观点" : decision.currentStage === "triage" ? "判断是否继续" : decision.currentStage === "conflict" ? "看看卡在哪里" : decision.currentStage === "clarify" ? "补充信息" : decision.currentStage === "proposals" ? "比较方案" : decision.currentStage === "review" ? "让各方确认方案" : decision.currentStage === "final" ? "查看决定记录" : "整理大家的意见";
-  const nextTitle = complete ? "这项决定已经保存" : nextPending ? `等待 ${escapeHtml(nextPending.name)} 确认观点` : decision.currentStage === "review" ? "正在等待每个人确认方案" : decision.currentStage === "final" ? "这项决定已经确认" : diagnosis ? "大家的观点已经整理好" : "可以开始整理大家的意见";
-  const nextDescription = complete ? "你可以随时回来查看当时为什么这样决定。" : nextPending ? "最后一位参与者确认后，再判断这件事是否继续。" : decision.currentStage === "review" ? "切换身份，说明每个人能否接受当前方案。" : decision.currentStage === "final" ? "查看已经保存的决定、依据和负责人。" : diagnosis ? "接下来由负责人判断这件事是否值得继续。" : "AI 会根据每个人确认过的话，找出大家真正卡住的地方。";
+  const decisionStatus = complete ? "已经确认" : decision.status === "deferred" ? "暂缓中" : decision.status === "rejected" ? "已结束" : decision.status === "needs_evidence" ? "等待补充信息" : stageLabels[decision.currentStage] || "进行中";
+  const needsBrief = !nextPending && !briefConfirmed;
+  const nextAction = complete ? "final" : nextPending ? "select-participant" : needsBrief ? (briefEntry ? "brief" : "prepare-brief") : decision.currentStage === "triage" ? "triage" : decision.currentStage === "conflict" || decision.currentStage === "clarify" ? "conflict" : decision.currentStage === "proposals" ? "explore" : decision.currentStage === "review" ? "review" : decision.currentStage === "final" ? "final" : "run-diagnose";
+  const nextLabel = complete ? "查看决定记录" : nextPending ? "确认观点" : needsBrief ? (briefEntry ? "检查共同问题" : "整理共同问题") : decision.currentStage === "triage" ? "判断是否继续" : decision.currentStage === "conflict" ? "看看卡在哪里" : decision.currentStage === "clarify" ? "补充信息" : decision.currentStage === "proposals" ? "比较方案" : decision.currentStage === "review" ? "让各方确认方案" : decision.currentStage === "final" ? "查看决定记录" : "分析需求和分歧";
+  const nextTitle = complete ? "这项决定已经保存" : nextPending ? `等待 ${escapeHtml(nextPending.name)} 确认观点` : needsBrief ? "先确认大家讨论的是同一个问题" : decision.currentStage === "review" ? "正在等待每个人确认方案" : decision.currentStage === "final" ? "这项决定已经确认" : diagnosis ? "大家的观点已经整理好" : "共同问题已经确认，可以继续分析";
+  const nextDescription = complete ? "你可以随时回来查看当时为什么这样决定。" : nextPending ? "本人先检查 AI 对目标、底线和依据的理解，确认后才会进入下一步。" : needsBrief ? "AI 会汇总共同目标、各方重点、真正分歧和证据缺口，再由负责人确认。" : decision.currentStage === "review" ? "切换身份，说明每个人能否接受当前方案。" : decision.currentStage === "final" ? "查看已经保存的决定、依据和负责人。" : diagnosis ? "接下来由负责人判断这件事是否值得继续。" : "AI 会根据确认过的个人观点和共同问题说明，找出真正卡住的地方。";
   const nextButton = complete ? `<button class="primary" data-action="${nextAction}">${nextLabel}</button>` : nextPending ? `<button class="primary" data-action="select-participant" data-id="${nextPending.id}">${nextLabel}</button>` : `<button class="primary" data-action="${nextAction}" ${state.busy ? "disabled" : ""}>${state.busy === "diagnose" ? "正在梳理…" : nextLabel}</button>`;
-  return shell(`<div class="page-head"><div><p class="eyebrow">这项决定</p><h1 style="font-size:36px">${escapeHtml(decision.title)}</h1><p>负责人：${escapeHtml(decision.ownerName)}${decision.deadline ? ` · 希望完成时间：${escapeHtml(decision.deadline)}` : ""}</p></div><span class="status-pill ${complete ? "green" : "amber"}">${complete ? "已经确认" : stageLabels[decision.currentStage] || "进行中"}</span></div>
+  return shell(`<div class="page-head"><div><p class="eyebrow">这项决定</p><h1 style="font-size:36px">${escapeHtml(decision.title)}</h1><p>负责人：${escapeHtml(decision.ownerName)}${decision.deadline ? ` · 希望完成时间：${escapeHtml(decision.deadline)}` : ""}</p></div><span class="status-pill ${complete ? "green" : "amber"}">${decisionStatus}</span></div>
     <section class="overview-grid"><div class="panel progress-panel"><div class="progress-ring" style="--progress:${percent * 3.6}deg"><span>${percent}%</span></div><div><p class="section-label">各方观点</p><h3>${confirmed} / ${total} 位参与者已确认</h3><p>只有本人确认过的话，AI 才会用来继续分析。</p></div></div><div class="panel timeline-panel"><p class="section-label">现在进行到哪里</p><div class="mini-timeline">${stageOrder.map((key, index) => `<span class="${index <= currentStageIndex() ? "done" : ""}"><i></i>${stageLabels[key]}</span>`).join("")}</div></div></section>
-    <section class="panel"><div class="row-between"><div><p class="section-label">参与者</p><h3>查看或填写每个人的观点</h3></div></div><div class="participant-list">${decision.participants.map((participant) => `<button class="participant participant-button" data-action="select-participant" data-id="${participant.id}"><span class="avatar">${escapeHtml(participant.name.slice(0, 1))}</span><div><strong>${escapeHtml(participant.name)}</strong><small>${escapeHtml(participant.role)}</small></div><span class="status-pill ${participant.submissionStatus === "confirmed" ? "green" : "amber"}">${participant.submissionStatus === "confirmed" ? "已确认" : "待确认"}</span></button>`).join("")}</div></section>
+    <section class="panel"><div class="row-between"><div><p class="section-label">参与者</p><h3>查看每个人确认后的目标、底线和依据</h3></div>${briefConfirmed ? '<button class="text-button" data-action="brief">查看已确认的共同问题</button>' : ""}</div><div class="participant-list">${decision.participants.map((participant) => `<button class="participant participant-button" data-action="select-participant" data-id="${participant.id}"><span class="avatar">${escapeHtml(participant.name.slice(0, 1))}</span><div><strong>${escapeHtml(participant.name)}</strong><small>${escapeHtml(participant.role)}</small></div><span class="status-pill ${participant.submissionStatus === "confirmed" ? "green" : "amber"}">${participant.submissionStatus === "confirmed" ? "本人已确认" : "待本人确认"}</span></button>`).join("")}</div></section>
     <section class="panel next-step-panel"><div><p class="section-label">下一步</p><h3>${nextTitle}</h3><p>${nextDescription}</p></div>${nextButton}</section>`);
+}
+
+function listText(value) {
+  return Array.isArray(value) ? value.join("\n") : "";
+}
+
+function viewpointListField(name, label, value, placeholder) {
+  return `<label class="structured-field"><span>${label}</span><textarea class="compact-textarea" data-viewpoint-field="${name}" placeholder="${escapeHtml(placeholder)}">${escapeHtml(listText(value))}</textarea></label>`;
 }
 
 function renderInput() {
   const decision = state.decision;
   if (!decision) return renderHome();
   const participant = decision.participants.find((item) => item.id === state.selectedParticipantId) || decision.participants.find((item) => item.submissionStatus !== "confirmed") || decision.participants[0];
-  const saved = artifact(`viewpoint:${participant.id}`);
+  const savedEntry = artifactEntry(`viewpoint:${participant.id}`);
+  const draftEntry = artifactEntry(`viewpoint_draft:${participant.id}`);
+  const structured = savedEntry?.payload || draftEntry?.payload || null;
   const defaultText = decision.isSample ? sampleViewpoints[participant.id] || "" : "";
-  const draft = state.participantDraft || saved?.text || defaultText;
-  return shell(`<div class="page-head"><div><p class="eyebrow">参与者观点</p><h1 style="font-size:36px">${escapeHtml(participant.name)}怎么想？</h1><p>先说清目标、顾虑和不能接受的情况。</p></div><span class="status-pill ${participant.submissionStatus === "confirmed" ? "green" : "amber"}">${participant.submissionStatus === "confirmed" ? "已确认" : "待确认"}</span></div>
+  const rawText = state.participantDraft || structured?.originalText || structured?.text || defaultText;
+  const structuredEditor = structured ? `<section class="panel structured-editor"><div class="object-head"><div><p class="section-label">AI 对这段话的理解</p><h2>请本人检查，有不对的地方直接修改</h2></div><span class="status-pill ${savedEntry?.status === "confirmed" ? "green" : "amber"}">${savedEntry?.status === "confirmed" ? "本人已确认" : "等待本人确认"}</span></div>
+    <div class="viewpoint-core-grid">
+      <label class="structured-field"><span>我想达到的结果</span><textarea class="compact-textarea" data-viewpoint-field="goal">${escapeHtml(structured.goal)}</textarea></label>
+      <label class="structured-field"><span>我现在支持的做法</span><textarea class="compact-textarea" data-viewpoint-field="position">${escapeHtml(structured.position)}</textarea></label>
+      <label class="structured-field wide"><span>我真正关心的事</span><textarea class="compact-textarea" data-viewpoint-field="underlyingNeed">${escapeHtml(structured.underlyingNeed)}</textarea></label>
+    </div>
+    <div class="viewpoint-detail-grid">
+      ${viewpointListField("nonNegotiables", "不能接受的情况", structured.nonNegotiables, "每行一项；没有可以留空")}
+      ${viewpointListField("negotiables", "可以商量的部分", structured.negotiables, "每行一项")}
+      ${viewpointListField("evidence", "已经提供的依据", structured.evidence, "每行一项；没有可以留空")}
+      ${viewpointListField("assumptions", "还没有证实的判断", structured.assumptions, "每行一项；没有可以留空")}
+      ${viewpointListField("openQuestions", "还需要本人说清楚", structured.openQuestions, "每行一项；没有可以留空")}
+    </div>
+    <div class="page-actions">${decision.isSample ? "" : `<button class="secondary" data-action="structure-participant" data-participant-id="${escapeHtml(participant.id)}" ${state.busy ? "disabled" : ""}>重新整理原话</button>`}<button class="primary" data-action="confirm-participant" data-participant-id="${escapeHtml(participant.id)}" ${state.busy ? "disabled" : ""}>${state.busy === "participant" ? "正在保存…" : savedEntry?.status === "confirmed" ? "保存修改并再次确认" : "这些就是我的意思"}</button></div>
+  </section>` : "";
+  return shell(`<div class="page-head"><div><p class="eyebrow">参与者观点</p><h1 style="font-size:36px">${escapeHtml(participant.name)}怎么想？</h1><p>先说原话，再确认 AI 有没有理解错。只有确认后的内容会进入后续分析。</p></div><span class="status-pill ${participant.submissionStatus === "confirmed" ? "green" : "amber"}">${participant.submissionStatus === "confirmed" ? "已确认" : "待确认"}</span></div>
     <section class="role-context"><span class="avatar large">${escapeHtml(participant.name.slice(0, 1))}</span><div><strong>${escapeHtml(participant.name)}</strong><p>${escapeHtml(participant.role)}</p></div></section>
-    <section class="composer"><label class="composer-label" for="participant-input">我的观点</label><textarea id="participant-input" aria-label="参与者观点" placeholder="例如：我希望按期上线，但不能接受高金额退款被自动处理。">${escapeHtml(draft)}</textarea><div class="composer-foot"><p class="helper">提交后，AI 会和其他人的观点一起梳理。</p><button class="primary" data-action="confirm-participant" data-participant-id="${escapeHtml(participant.id)}" ${state.busy ? "disabled" : ""}>${state.busy === "participant" ? "正在保存…" : "确认并提交"}</button></div></section><div class="page-actions"><button class="secondary" data-action="overview">返回总览</button></div>`);
+    <section class="composer participant-composer"><label class="composer-label" for="participant-input">先用自己的话说明</label><textarea id="participant-input" aria-label="参与者原始观点" placeholder="例如：我希望按期上线，但不能接受高金额退款被自动处理。">${escapeHtml(rawText)}</textarea><div class="composer-foot"><p class="helper">AI 会把目标、底线、可商量部分、依据和假设分开。</p>${structured ? "" : `<button class="primary" data-action="structure-participant" data-participant-id="${escapeHtml(participant.id)}" ${state.busy ? "disabled" : ""}>${state.busy === "viewpoint" ? "正在整理…" : "让 AI 帮我整理"}</button>`}</div></section>
+    ${structuredEditor}<div class="page-actions"><button class="secondary" data-action="overview">返回总览</button></div>`);
+}
+
+function briefListField(name, label, value, hint) {
+  return `<label class="structured-field"><span>${label}</span><small>${hint}</small><textarea class="compact-textarea" data-brief-field="${name}">${escapeHtml(listText(value))}</textarea></label>`;
+}
+
+function renderBrief() {
+  const entry = artifactEntry("decision_brief");
+  const brief = entry?.payload;
+  if (!brief) return shell(`<section class="panel empty-state"><h2>先把大家确认过的话放在一起</h2><p>AI 会整理共同目标、真正分歧、不能违反的条件和还缺的依据。</p><button class="primary" data-action="prepare-brief" ${state.busy ? "disabled" : ""}>${state.busy === "brief" ? "正在汇总…" : "整理共同问题"}</button></section>`);
+  return shell(`<div class="page-head"><div><p class="eyebrow">共同问题确认</p><h1 style="font-size:36px">先确认大家讨论的是同一件事</h1><p>这一步只确认问题和各方诉求，不选择最终方案。</p></div><span class="status-pill ${entry.status === "confirmed" ? "green" : "amber"}">${entry.status === "confirmed" ? "负责人已确认" : "等待负责人确认"}</span></div>
+    <section class="panel shared-brief"><div class="brief-core-grid"><label class="structured-field"><span>大家共同想做到</span><textarea class="compact-textarea" data-brief-field="commonGoal">${escapeHtml(brief.commonGoal)}</textarea></label><label class="structured-field"><span>这次真正需要决定</span><textarea class="compact-textarea" data-brief-field="decisionQuestion">${escapeHtml(brief.decisionQuestion)}</textarea></label></div>
+      <div class="participant-summary-grid">${(brief.participantSummaries || []).map((item) => `<article class="participant-summary"><strong>${escapeHtml(item.participant)}</strong><p><span>最在意：</span>${escapeHtml(item.priority)}</p><p><span>最担心：</span>${escapeHtml(item.concern)}</p></article>`).join("")}</div>
+      <div class="brief-detail-grid">${briefListField("agreements", "已经一致的地方", brief.agreements, "不需要继续争论的内容")}${briefListField("disagreements", "真正还没解决的分歧", brief.disagreements, "后面的方案要回应这些分歧")}${briefListField("nonNegotiables", "不能违反的条件", brief.nonNegotiables, "只有明确规则或已经确认的底线")}${briefListField("preferences", "希望尽量做到的事", brief.preferences, "可以由负责人取舍的偏好")}${briefListField("evidenceGaps", "还缺的依据", brief.evidenceGaps, "哪些信息可能改变方案")}</div>
+      <label class="structured-field"><span>哪些判断仍由负责人完成</span><textarea class="compact-textarea" data-brief-field="boundaryNote">${escapeHtml(brief.boundaryNote)}</textarea></label>
+      <div class="page-actions"><button class="secondary" data-action="overview">返回检查个人观点</button><button class="primary" data-action="confirm-brief" ${state.busy ? "disabled" : ""}>${state.busy === "brief-confirm" ? "正在保存…" : entry.status === "confirmed" ? "保存修改并再次确认" : "确认问题理解正确"}</button></div>
+    </section>`);
 }
 
 function renderTriage() {
@@ -317,10 +384,11 @@ function renderTriage() {
   if (!diagnosis) return shell(`<section class="panel empty-state"><h2>还没有整理大家的意见</h2><p>先看看现有信息够不够，以及大家真正卡在哪里。</p><button class="primary" data-action="run-diagnose">开始整理</button></section>`);
   const assessment = diagnosis.demandAssessment;
   const outcomes = { need_evidence: "先找更多依据", defer: "暂时不决定", reject: "不再继续", proceed: "继续讨论" };
+  const stopped = ["defer", "reject"].includes(triage?.outcome) && ["deferred", "rejected"].includes(state.decision.status);
   return shell(`<div class="page-head"><div><p class="eyebrow">判断是否继续</p><h1 style="font-size:36px">这件事值得继续讨论吗？</h1><p>AI 帮你整理已有依据和风险，最后由负责人决定。</p></div><span class="status-pill amber">${escapeHtml(assessment.evidenceStatus)}</span></div>
     <section class="panel demand-card"><div class="demand-visual">${icon("value", "line-icon large-icon")}</div><div><p class="section-label">AI 帮你看到的情况</p><h2>${escapeHtml(assessment.summary)}</h2><p>${escapeHtml(assessment.recommendation)}</p></div></section>
-    ${triage && triage.outcome !== "proceed" ? `<section class="panel alert"><h3>${outcomes[triage.outcome]}</h3><p>这个结果已经保存，你仍可以修改决定并继续。</p></section>` : ""}
-    <section class="panel"><p class="section-label">由 ${escapeHtml(state.decision.ownerName)} 决定</p><div class="card-actions"><button class="primary" data-action="triage-decision" data-outcome="proceed">继续讨论</button><button class="secondary" data-action="triage-decision" data-outcome="need_evidence">先找更多依据</button><button class="secondary" data-action="triage-decision" data-outcome="defer">暂时不决定</button><button class="danger" data-action="triage-decision" data-outcome="reject">不再继续</button></div></section>`);
+    ${stopped ? `<section class="panel alert"><h3>${outcomes[triage.outcome]}</h3><p>${escapeHtml(triage.note)}</p><p>原因已经保存。负责人以后仍可以重新开始讨论。</p></section>` : ""}
+    <section class="panel"><p class="section-label">由 ${escapeHtml(state.decision.ownerName)} 决定</p><label class="structured-field" for="triage-note"><span>如果选择暂缓或结束，请说明原因</span><textarea id="triage-note" class="compact-textarea" placeholder="例如：关键数据要到下周才能拿到，届时再重新讨论。">${escapeHtml(stopped ? triage.note : "")}</textarea></label><div class="card-actions"><button class="primary" data-action="triage-decision" data-outcome="proceed">${stopped ? "重新开始讨论" : "继续讨论"}</button><button class="secondary" data-action="triage-decision" data-outcome="need_evidence">先找更多依据</button><button class="secondary" data-action="triage-decision" data-outcome="defer">暂时不决定</button><button class="danger" data-action="triage-decision" data-outcome="reject">不再继续</button></div></section>`);
 }
 
 function severityLabel(value) {
@@ -332,7 +400,7 @@ function renderConflict() {
   const diagnosis = artifact("diagnosis");
   if (!diagnosis) return renderTriage();
   return shell(`<div class="page-head"><div><p class="eyebrow">看看卡在哪里</p><h1 style="font-size:36px">为什么大家一直定不下来？</h1><p>重点不是谁反对谁，而是哪两件事现在无法同时做到。</p></div><span class="status-pill red">${diagnosis.conflicts.length} 个主要问题</span></div>
-    <section class="panel conflict-map-panel"><div class="map-goal"><span class="map-kicker">大家共同想做到</span><strong>${escapeHtml(analysis.goal || state.decision.title)}</strong></div><div class="conflict-map" aria-label="主要问题">${diagnosis.conflicts.map((conflict) => `<article class="conflict-map-row"><div class="map-node"><span>希望做到</span><strong>${escapeHtml(conflict.sideA)}</strong></div><div class="map-bridge ${conflict.severity === "critical" ? "red" : "amber"}"><span>${escapeHtml(conflict.title)}</span><strong>${severityLabel(conflict.severity)}</strong></div><div class="map-node"><span>但同时</span><strong>${escapeHtml(conflict.sideB)}</strong></div></article>`).join("")}</div></section>
+    <section class="panel conflict-map-panel"><div class="map-goal"><span class="map-kicker">大家共同想做到</span><strong>${escapeHtml(analysis.goal || state.decision.title)}</strong></div><div class="conflict-map" aria-label="主要问题">${diagnosis.conflicts.map((conflict) => `<article class="conflict-map-row"><div class="map-node"><span>一边是</span><strong>${escapeHtml(conflict.sideA)}</strong></div><div class="map-bridge ${conflict.severity === "critical" ? "red" : "amber"}"><span>${escapeHtml(conflict.title)}</span><strong>${severityLabel(conflict.severity)}</strong></div><div class="map-node"><span>另一边是</span><strong>${escapeHtml(conflict.sideB)}</strong></div></article>`).join("")}</div></section>
     <section class="panel question-highlight"><span class="question-icon">?</span><div class="row-between"><div><p class="section-label">现在最该弄清楚</p><h3>${escapeHtml(diagnosis.questions[0]?.question || "还有哪些信息会改变选择？")}</h3><p>${escapeHtml(diagnosis.questions[0]?.why || "先弄清这个问题，再比较方案。")}</p></div><button class="primary" data-action="clarify">回答这个问题</button></div></section>`);
 }
 
@@ -349,7 +417,11 @@ function proposalCard(proposal, selectedId) {
   const metrics = [["能覆盖多少", ...metric(proposal.coverage)], ["能否按时", ...metric(proposal.timeConfidence)], ["风险是否可控", ...metric(proposal.riskControl)]];
   const actionLabel = validation.status === "human_tradeoff" ? "接受这个代价并选择" : labels[validation.status];
   const selectedLabel = selectedId === proposal.id && !selectable ? "原来选择，现已不可用" : selectedId === proposal.id ? "已选择" : actionLabel;
-  return `<article class="proposal-card ${selectedId === proposal.id ? "recommended" : ""} ${selectable ? "" : "blocked"}"><div class="object-head"><span class="tag">方案 ${escapeHtml(proposal.id)}</span><span class="status-pill ${tones[validation.status]}">${labels[validation.status]}</span></div><h3>${escapeHtml(proposal.title)}</h3><p>${escapeHtml(proposal.summary)}</p><div class="proposal-metrics">${metrics.map(([label, value, level]) => `<div class="proposal-metric"><span>${label}</span><span class="metric-dots" aria-label="${label}${value}">${[1, 2, 3].map((index) => `<i class="${index <= level ? "filled" : ""}"></i>`).join("")}</span><strong>${value}</strong></div>`).join("")}</div><div class="proposal-note"><span>需要接受什么</span><p>${escapeHtml(proposal.tradeoff)}</p></div><details class="proposal-details"><summary>查看风险和选择条件</summary><p><strong>需要注意：</strong>${escapeHtml(proposal.risk)}</p><p><strong>为什么能选或不能选：</strong>${escapeHtml(validation.reason)}</p></details><div class="card-actions"><button class="choice-button ${selectedId === proposal.id ? "active" : ""}" data-action="select-proposal" data-id="${escapeHtml(proposal.id)}" ${selectable ? "" : "disabled"}>${selectedLabel}</button></div></article>`;
+  const steps = proposal.steps || [];
+  const satisfies = proposal.satisfies || [];
+  const sacrifices = proposal.sacrifices || (proposal.tradeoff ? [proposal.tradeoff] : []);
+  const evidenceNeeded = proposal.evidenceNeeded || [];
+  return `<article class="proposal-card ${selectedId === proposal.id ? "recommended" : ""} ${selectable ? "" : "blocked"}"><div class="object-head"><span class="tag">方案 ${escapeHtml(proposal.id)}</span><span class="status-pill ${tones[validation.status]}">${labels[validation.status]}</span></div><h3>${escapeHtml(proposal.title)}</h3><p>${escapeHtml(proposal.summary)}</p>${proposal.whyWorthConsidering ? `<div class="proposal-insight"><span>这个方案的新思路</span><p>${escapeHtml(proposal.whyWorthConsidering)}</p></div>` : ""}<div class="proposal-metrics">${metrics.map(([label, value, level]) => `<div class="proposal-metric"><span>${label}</span><span class="metric-dots" aria-label="${label}${value}">${[1, 2, 3].map((index) => `<i class="${index <= level ? "filled" : ""}"></i>`).join("")}</span><strong>${value}</strong></div>`).join("")}</div><div class="proposal-note"><span>需要接受什么</span><p>${escapeHtml(proposal.tradeoff)}</p></div><details class="proposal-details"><summary>查看怎么做、依据和回退办法</summary>${proposal.approach ? `<p><strong>核心做法：</strong>${escapeHtml(proposal.approach)}</p>` : ""}${steps.length ? `<div class="proposal-detail-block"><strong>执行步骤</strong><ol>${steps.map((item) => `<li>${escapeHtml(item)}</li>`).join("")}</ol></div>` : ""}${satisfies.length ? `<p><strong>能满足：</strong>${escapeHtml(inlineList(satisfies))}</p>` : ""}${sacrifices.length ? `<p><strong>要放弃：</strong>${escapeHtml(inlineList(sacrifices))}</p>` : ""}${evidenceNeeded.length ? `<p><strong>还要确认：</strong>${escapeHtml(inlineList(evidenceNeeded))}</p>` : ""}<p><strong>需要注意：</strong>${escapeHtml(proposal.risk)}</p>${proposal.rollbackPlan ? `<p><strong>不顺利时：</strong>${escapeHtml(proposal.rollbackPlan)}</p>` : ""}${proposal.successSignal ? `<p><strong>怎样算有效：</strong>${escapeHtml(proposal.successSignal)}</p>` : ""}<p><strong>检查结论：</strong>${escapeHtml(validation.reason)}</p></details><div class="card-actions"><button class="choice-button ${selectedId === proposal.id ? "active" : ""}" data-action="select-proposal" data-id="${escapeHtml(proposal.id)}" ${selectable ? "" : "disabled"}>${selectedLabel}</button></div></article>`;
 }
 
 function renderClarify() {
@@ -370,9 +442,9 @@ function renderClarify() {
     return shell(`<div class="page-head"><div><p class="eyebrow">补充信息</p><h1 style="font-size:36px">${afterObjection ? "新信息的依据已经补上" : "关键信息已经补上"}</h1><p>${afterObjection ? "现在可以回到方案页，看看哪些方案还能继续。" : "接下来用这些信息准备并检查候选方案。"}</p></div><span class="status-pill green">回答已保存</span></div><section class="panel success-panel"><p class="section-label">下一步</p><h3>${afterObjection ? "重新看看可选方案" : state.forceRegenerate ? "根据新信息更新方案" : "比较几种不同做法"}</h3><p>${state.decision.isSample ? "示例结果已经准备好，不需要等待 AI。" : "系统会根据刚补充的信息更新并检查方案。"}</p></section><div class="page-actions"><button class="secondary" data-action="conflict">返回看看问题</button><button class="primary" data-action="generate-proposals" ${state.busy ? "disabled" : ""}>${state.busy === "proposals" ? "正在准备方案…" : afterObjection ? "回到方案选择" : state.forceRegenerate ? "更新并检查方案" : "查看可选方案"}</button></div>`);
   }
   if (!editable) {
-    return shell(`<div class="page-head"><div><p class="eyebrow">补充信息</p><h1 style="font-size:36px">决定方案前，我们补充了什么？</h1><p>这些回答会影响哪些方案能选。</p></div><span class="status-pill green">已经补充</span></div><section class="panel"><div class="question-list">${questions.map((question, index) => { const previous = (clarification?.answers || []).find((answer) => answer.questionId === question.id)?.answer || (state.decision.isSample ? "约 92%" : "未记录"); return `<div class="question-box"><p class="section-label">${index + 1}/${questions.length} · ${escapeHtml(question.owner)}</p><h3>${escapeHtml(question.question)}</h3><p class="saved-answer">${escapeHtml(previous)}</p></div>`; }).join("")}</div></section><div class="page-actions"><button class="secondary" data-action="conflict">返回看看问题</button><button class="primary" data-action="revise-clarification">修改信息并更新方案</button></div>`);
+    return shell(`<div class="page-head"><div><p class="eyebrow">补充信息</p><h1 style="font-size:36px">决定方案前，我们补充了什么？</h1><p>这些回答会影响哪些方案能选。</p></div><span class="status-pill green">已经补充</span></div><section class="panel"><div class="question-list">${questions.map((question, index) => { const previous = (clarification?.answers || []).find((answer) => answer.questionId === question.id)?.answer || (state.decision.isSample ? sampleClarificationAnswers[question.id] || "示例中没有记录这项信息" : "未记录"); return `<div class="question-box"><p class="section-label">${index + 1}/${questions.length} · ${escapeHtml(question.owner)}</p><h3>${escapeHtml(question.question)}</h3><p class="saved-answer">${escapeHtml(previous)}</p></div>`; }).join("")}</div></section><div class="page-actions"><button class="secondary" data-action="conflict">返回看看问题</button><button class="primary" data-action="revise-clarification">修改信息并更新方案</button></div>`);
   }
-  return shell(`<div class="page-head"><div><p class="eyebrow">补充信息</p><h1 style="font-size:36px">${state.objectionEvidenceMode ? "先确认这条新信息靠不靠谱" : "先补上最影响结果的信息"}</h1><p>${state.objectionEvidenceMode ? "有依据再调整方案，避免一句新说法就推翻原来的决定。" : "回答清楚后，才知道哪些方案能做。"}</p></div><span class="status-pill amber">${questions.length} 个问题</span></div><section class="panel"><div class="question-list">${questions.map((question, index) => { const previous = (clarification?.answers || []).find((answer) => answer.questionId === question.id)?.answer || ""; const sampleAnswer = state.objectionEvidenceMode ? "研发重新拆分了任务：规则整理 4 天、开发和联调 8 天、测试 3 天，至少需要三周。" : "约 92%"; return `<div class="question-box"><p class="section-label">请 ${escapeHtml(question.owner)} 回答 · ${index + 1}/${questions.length}</p><label for="answer-${escapeHtml(question.id)}">${escapeHtml(question.question)}</label><p>${escapeHtml(question.why)}</p><input id="answer-${escapeHtml(question.id)}" data-question-id="${escapeHtml(question.id)}" value="${escapeHtml(state.clarificationAnswers[question.id] || previous || (state.decision.isSample ? sampleAnswer : ""))}" /></div>`; }).join("")}</div><div class="page-actions"><button class="secondary" data-action="${state.objectionEvidenceMode ? "cancel-objection-evidence" : "conflict"}">${state.objectionEvidenceMode ? "返回各方意见" : "返回看看问题"}</button><button class="primary" data-action="save-clarifications">${state.objectionEvidenceMode ? "确认这条依据" : state.revisingClarification ? "保存并更新方案" : "保存回答"}</button></div></section>`);
+  return shell(`<div class="page-head"><div><p class="eyebrow">补充信息</p><h1 style="font-size:36px">${state.objectionEvidenceMode ? "先确认这条新信息靠不靠谱" : "先补上最影响结果的信息"}</h1><p>${state.objectionEvidenceMode ? "有依据再调整方案，避免一句新说法就推翻原来的决定。" : "回答清楚后，才知道哪些方案能做。"}</p></div><span class="status-pill amber">${questions.length} 个问题</span></div><section class="panel"><div class="question-list">${questions.map((question, index) => { const previous = (clarification?.answers || []).find((answer) => answer.questionId === question.id)?.answer || ""; const sampleAnswer = state.objectionEvidenceMode ? "研发重新拆分了任务：规则整理 4 天、开发和联调 8 天、测试 3 天，至少需要三周。" : sampleClarificationAnswers[question.id] || ""; return `<div class="question-box"><p class="section-label">请 ${escapeHtml(question.owner)} 回答 · ${index + 1}/${questions.length}</p><label for="answer-${escapeHtml(question.id)}">${escapeHtml(question.question)}</label><p>${escapeHtml(question.why)}</p><input id="answer-${escapeHtml(question.id)}" data-question-id="${escapeHtml(question.id)}" value="${escapeHtml(state.clarificationAnswers[question.id] || previous || (state.decision.isSample ? sampleAnswer : ""))}" /></div>`; }).join("")}</div><div class="page-actions"><button class="secondary" data-action="${state.objectionEvidenceMode ? "cancel-objection-evidence" : "conflict"}">${state.objectionEvidenceMode ? "返回各方意见" : "返回看看问题"}</button><button class="primary" data-action="save-clarifications">${state.objectionEvidenceMode ? "确认这条依据" : state.revisingClarification ? "保存并更新方案" : "保存回答"}</button></div></section>`);
 }
 
 function renderExplore() {
@@ -382,8 +454,7 @@ function renderExplore() {
   if (!diagnosis) return renderTriage();
   if (!proposalData) return renderClarify();
   const proposals = proposalData.proposals || [];
-  const activeObjection = artifact("objection_analysis");
-  const hasAffectedSelection = activeObjection?.active !== false && activeObjection?.affectedProposalIds?.includes(selection?.proposalId);
+  const hasAffectedSelection = Boolean(selection?.proposalId && displayValidationFor(selection.proposalId)?.status === "blocked");
   const effectiveSelectableCount = proposals.filter((item) => ["pass", "human_tradeoff"].includes(displayValidationFor(item.id)?.status)).length;
   const validationSummary = hasAffectedSelection
     ? "新信息已经让原方案无法继续，请从剩下的方案中重新选择。"
@@ -427,17 +498,25 @@ function buildFinalRecord() {
   const proposals = artifact("proposals")?.proposals || [];
   const proposal = proposals.find((item) => item.id === selection?.proposalId) || proposals[0] || {};
   const analysis = artifact("analysis") || {};
-  const diagnosis = artifact("diagnosis") || {};
   const storedObjectionAnalysis = artifact("objection_analysis");
   const objectionAnalysis = storedObjectionAnalysis?.active === false ? null : storedObjectionAnalysis;
   const lastMeaningfulObjection = [...(state.decision.artifacts || [])].reverse().find((item) => item.type === "objection_analysis" && item.payload?.summary)?.payload || null;
   const reviews = state.decision.participants.map((participant) => ({ participant, review: reviewFor(participant.id) })).filter((item) => item.review);
+  const clarificationEvidence = artifacts("clarification").flatMap((item) => item.payload?.answers || []).map((item) => String(item.answer || "").trim()).filter(Boolean);
+  const evidence = [...new Set([...(analysis.constraints || []).map((item) => item.statement), ...clarificationEvidence])].slice(0, 8);
+  const sampleResponsibilities = {
+    "产品负责人": "产品负责人：确定首发范围，跟踪客服减负效果和剩余风险。",
+    "业务负责人": "业务负责人：核对退款量和人工处理变化，反馈白名单覆盖是否有效。",
+    "研发负责人": "研发负责人：实现白名单、人工确认队列、停止开关和操作记录。",
+    "风控负责人": "风控负责人：确认白名单规则，抽查执行结果并决定是否扩大范围。",
+  };
   return {
-    decision: proposal.summary || state.decision.title,
-    why: `这个方案更接近大家共同想做到的事：“${analysis.goal || state.decision.title}”。目前也没有发现必须停止的问题。`,
-    satisfied: ["保留了当前最重要的目标。", validationFor(proposal.id)?.reason || "没有违反已经确认的条件。"],
-    evidence: (analysis.constraints || []).map((item) => item.statement).slice(0, 4).concat(diagnosis.demandAssessment?.evidenceStatus ? [`目前支持这项需求的信息：${diagnosis.demandAssessment.evidenceStatus}`] : []).slice(0, 5),
-    sacrificed: proposal.tradeoff || "第一版要做多少仍需明确。",
+    decision: proposal.title || state.decision.title,
+    decisionDetails: proposal.summary || "",
+    why: proposal.whyWorthConsidering || `这个方案更接近大家共同想做到的事：“${analysis.goal || state.decision.title}”。目前也没有发现必须停止的问题。`,
+    satisfied: proposal.satisfies?.length ? proposal.satisfies : ["保留了当前最重要的目标。", validationFor(proposal.id)?.reason || "没有违反已经确认的条件。"],
+    evidence: evidence.length ? evidence : ["当前依据仍需负责人确认。"],
+    sacrificed: proposal.sacrifices?.length ? inlineList(proposal.sacrifices) : proposal.tradeoff || "第一版要做多少仍需明确。",
     rejectedOptions: proposals.filter((item) => item.id !== proposal.id).map((item) => {
       const objectionReason = lastMeaningfulObjection?.affectedProposalIds?.includes(item.id) ? lastMeaningfulObjection.summary : "";
       return `${item.title}：${objectionReason || validationFor(item.id)?.reason || item.tradeoff || "不符合现在的选择"}`;
@@ -445,7 +524,7 @@ function buildFinalRecord() {
     risks: proposal.risk || "执行过程中仍要留意新的信息。",
     unresolvedObjections: reviews.filter((item) => item.review.status !== "accept").map((item) => `${item.participant.name}：${item.review.note}`).concat(objectionAnalysis && !objectionAnalysis.affectedProposalIds?.includes(proposal.id) ? [`${objectionAnalysis.summary}（已经确认，不影响当前方案继续）`] : []),
     acceptedRisks: [proposal.risk || "执行中继续留意新的信息"],
-    responsibilities: state.decision.participants.map((item) => item.name === state.decision.ownerName ? `${item.name}：确认范围、推进执行并跟踪风险。` : `${item.name}：按${item.role}职责确认执行条件，发现变化时及时反馈。`),
+    responsibilities: state.decision.participants.map((item) => state.decision.isSample && sampleResponsibilities[item.name] ? sampleResponsibilities[item.name] : item.name === state.decision.ownerName ? `${item.name}：确认范围、推进执行并跟踪风险。` : `${item.name}：按${item.role}职责确认执行条件，发现变化时及时反馈。`),
     assumptions: proposal.assumptions || [],
     reopen: "关键目标、时间、成本或风险条件发生变化时，重新打开这项决定。",
     humanDecisionNote: `AI 帮忙整理、提出方案并检查问题；${state.decision.ownerName}听取各方意见后作出最终选择。`,
@@ -456,11 +535,11 @@ function renderFinal() {
   const record = buildFinalRecord();
   const complete = state.decision?.status === "complete";
   const ready = state.finalRiskAcknowledged && state.finalHumanAcknowledged;
-  return shell(`<div class="record-header"><p class="eyebrow">最终决定</p><h1>${escapeHtml(record.decision)}</h1><p>${complete ? "负责人已经确认并保存" : "等待负责人确认"}</p></div>${complete ? '<section class="panel success-panel"><div class="check-summary"><span class="check-mark">✓</span><div><strong>这项决定已经保存</strong><p>以后出现新信息时，原来的记录仍会保留。</p></div></div></section>' : ""}<div class="record-layout"><section class="record-section"><h3>为什么这样决定</h3><p>${escapeHtml(record.why)}</p></section><section class="record-section"><h3>做到了什么</h3><ul class="list">${(record.satisfied || []).map((item) => `<li>${escapeHtml(item)}</li>`).join("")}</ul></section><section class="record-section"><h3>主要依据</h3><ul class="list">${(record.evidence || []).map((item) => `<li>${escapeHtml(item)}</li>`).join("")}</ul></section><section class="record-section"><h3>为什么没有选其他方案</h3><ul class="list">${(record.rejectedOptions || []).map((item) => `<li>${escapeHtml(item)}</li>`).join("")}</ul></section><section class="record-section"><h3>接受了什么代价</h3><p>${escapeHtml(record.sacrificed)}</p></section><section class="record-section"><h3>还要注意什么</h3><p>${escapeHtml(record.risks)}</p></section><section class="record-section"><h3>大家还有哪些顾虑</h3>${record.unresolvedObjections?.length ? `<ul class="list">${record.unresolvedObjections.map((item) => `<li>${escapeHtml(item)}</li>`).join("")}</ul>` : "<p>目前没有尚未记录的顾虑。</p>"}</section><section class="record-section"><h3>谁来跟进</h3><ul class="list">${(record.responsibilities || []).map((item) => `<li>${escapeHtml(item)}</li>`).join("")}</ul></section><section class="record-section"><h3>什么情况下重新讨论</h3><p>${escapeHtml(record.reopen)}</p></section><section class="record-section"><h3>人和 AI 分别做了什么</h3><p>${escapeHtml(record.humanDecisionNote)}</p></section></div>${complete ? '<div class="page-actions"><button class="secondary" data-action="home">返回首页</button></div>' : `<section class="panel confirmation-panel"><label><input type="checkbox" id="confirm-risk" ${state.finalRiskAcknowledged ? "checked" : ""} />我已经了解仍然存在的问题和风险。</label><label><input type="checkbox" id="confirm-human" ${state.finalHumanAcknowledged ? "checked" : ""} />我确认最终选择由负责人作出。</label></section><div class="page-actions"><button class="secondary" data-action="review">返回各方意见</button><button class="primary" data-action="confirm-final" ${ready && !state.busy ? "" : "disabled"}>${state.busy === "final" ? "正在保存…" : "确认并保存"}</button></div>`}`);
+  return shell(`<div class="record-header"><p class="eyebrow">最终决定</p><h1>${escapeHtml(record.decision)}</h1>${record.decisionDetails ? `<p class="lead">${escapeHtml(record.decisionDetails)}</p>` : ""}<p>${complete ? "负责人已经确认并保存" : "等待负责人确认"}</p></div>${complete ? '<section class="panel success-panel"><div class="check-summary"><span class="check-mark">✓</span><div><strong>这项决定已经保存</strong><p>以后出现新信息时，原来的记录仍会保留。</p></div></div></section>' : ""}<div class="record-layout"><section class="record-section"><h3>为什么这样决定</h3><p>${escapeHtml(record.why)}</p></section><section class="record-section"><h3>做到了什么</h3><ul class="list">${(record.satisfied || []).map((item) => `<li>${escapeHtml(item)}</li>`).join("")}</ul></section><section class="record-section"><h3>主要依据</h3><ul class="list">${(record.evidence || []).map((item) => `<li>${escapeHtml(item)}</li>`).join("")}</ul></section><section class="record-section"><h3>为什么没有选其他方案</h3><ul class="list">${(record.rejectedOptions || []).map((item) => `<li>${escapeHtml(item)}</li>`).join("")}</ul></section><section class="record-section"><h3>接受了什么代价</h3><p>${escapeHtml(record.sacrificed)}</p></section><section class="record-section"><h3>还要注意什么</h3><p>${escapeHtml(record.risks)}</p></section><section class="record-section"><h3>大家还有哪些顾虑</h3>${record.unresolvedObjections?.length ? `<ul class="list">${record.unresolvedObjections.map((item) => `<li>${escapeHtml(item)}</li>`).join("")}</ul>` : "<p>目前没有尚未记录的顾虑。</p>"}</section><section class="record-section"><h3>谁来跟进</h3><ul class="list">${(record.responsibilities || []).map((item) => `<li>${escapeHtml(item)}</li>`).join("")}</ul></section><section class="record-section"><h3>什么情况下重新讨论</h3><p>${escapeHtml(record.reopen)}</p></section><section class="record-section"><h3>人和 AI 分别做了什么</h3><p>${escapeHtml(record.humanDecisionNote)}</p></section></div>${complete ? '<div class="page-actions"><button class="secondary" data-action="home">返回首页</button></div>' : `<section class="panel confirmation-panel"><label><input type="checkbox" id="confirm-risk" ${state.finalRiskAcknowledged ? "checked" : ""} />我已经了解仍然存在的问题和风险。</label><label><input type="checkbox" id="confirm-human" ${state.finalHumanAcknowledged ? "checked" : ""} />我确认最终选择由负责人作出。</label></section><div class="page-actions"><button class="secondary" data-action="review">返回各方意见</button><button class="primary" data-action="confirm-final" ${ready && !state.busy ? "" : "disabled"}>${state.busy === "final" ? "正在保存…" : "确认并保存"}</button></div>`}`);
 }
 
 function render() {
-  const views = { home: renderHome, work: renderWork, scene: renderScene, create: renderCreate, overview: renderOverview, input: renderInput, triage: renderTriage, conflict: renderConflict, clarify: renderClarify, explore: renderExplore, review: renderReview, final: renderFinal };
+  const views = { home: renderHome, work: renderWork, scene: renderScene, create: renderCreate, overview: renderOverview, input: renderInput, brief: renderBrief, triage: renderTriage, conflict: renderConflict, clarify: renderClarify, explore: renderExplore, review: renderReview, final: renderFinal };
   document.getElementById("app").innerHTML = (views[state.screen] || renderHome)();
   bindInputs();
   bindActions();
@@ -502,10 +581,44 @@ async function postEvent(type, payload = {}, actor) {
   return result.decision;
 }
 
-async function runAiTask(task) {
-  const payload = await api(`/api/decisions/${encodeURIComponent(state.decision.id)}/ai/${task}`, { method: "POST", body: "{}" });
+async function runAiTask(task, body = {}) {
+  const payload = await api(`/api/decisions/${encodeURIComponent(state.decision.id)}/ai/${task}`, { method: "POST", body: JSON.stringify(body) });
   state.decision = payload.decision;
   return payload.result;
+}
+
+function linesFromField(selector) {
+  return (document.querySelector(selector)?.value || "").split(/\r?\n/).map((item) => item.trim()).filter(Boolean);
+}
+
+function viewpointFromForm() {
+  const value = (name) => document.querySelector(`[data-viewpoint-field="${name}"]`)?.value.trim() || "";
+  return {
+    goal: value("goal"),
+    position: value("position"),
+    underlyingNeed: value("underlyingNeed"),
+    nonNegotiables: linesFromField('[data-viewpoint-field="nonNegotiables"]'),
+    negotiables: linesFromField('[data-viewpoint-field="negotiables"]'),
+    evidence: linesFromField('[data-viewpoint-field="evidence"]'),
+    assumptions: linesFromField('[data-viewpoint-field="assumptions"]'),
+    openQuestions: linesFromField('[data-viewpoint-field="openQuestions"]'),
+  };
+}
+
+function briefFromForm() {
+  const current = artifact("decision_brief") || {};
+  const value = (name) => document.querySelector(`[data-brief-field="${name}"]`)?.value.trim() || "";
+  return {
+    commonGoal: value("commonGoal"),
+    decisionQuestion: value("decisionQuestion"),
+    participantSummaries: current.participantSummaries || [],
+    agreements: linesFromField('[data-brief-field="agreements"]'),
+    disagreements: linesFromField('[data-brief-field="disagreements"]'),
+    nonNegotiables: linesFromField('[data-brief-field="nonNegotiables"]'),
+    preferences: linesFromField('[data-brief-field="preferences"]'),
+    evidenceGaps: linesFromField('[data-brief-field="evidenceGaps"]'),
+    boundaryNote: value("boundaryNote"),
+  };
 }
 
 async function handleAction(action, button) {
@@ -541,7 +654,7 @@ async function handleAction(action, button) {
     if (state.decision?.currentStage === "collect" && artifact("diagnosis")) await postEvent("stage_changed", { stage: "triage" }, "Resolve");
     return go("triage");
   }
-  if (["work", "scene", "create", "overview", "input", "conflict", "clarify", "explore", "final"].includes(action)) return go(action);
+  if (["work", "scene", "create", "overview", "input", "brief", "conflict", "clarify", "explore", "final"].includes(action)) return go(action);
   if (action === "review") {
     const nextReviewer = state.decision?.participants?.find((participant) => !reviewFor(participant.id)) || state.decision?.participants?.[0];
     selectReviewer(nextReviewer);
@@ -568,13 +681,40 @@ async function handleAction(action, button) {
     return;
   }
   if (action === "select-participant") { state.selectedParticipantId = button.dataset.id; state.participantDraft = ""; return go("input"); }
+  if (action === "structure-participant") {
+    const participant = state.decision.participants.find((item) => item.id === button.dataset.participantId);
+    const rawText = document.getElementById("participant-input")?.value.trim() || state.participantDraft.trim();
+    if (!participant) throw new Error("没有找到这位参与者。");
+    if (rawText.length < 5) throw new Error("请先写下这位参与者的观点。");
+    state.participantDraft = rawText;
+    state.busy = "viewpoint"; state.error = ""; render();
+    try { await runAiTask("viewpoint", { participantId: participant.id, rawText }); }
+    finally { state.busy = ""; render(); }
+    return;
+  }
   if (action === "confirm-participant") {
-    const text = document.getElementById("participant-input")?.value.trim() || state.participantDraft.trim();
-    if (text.length < 5) throw new Error("请先写下这位参与者的观点。");
+    const originalText = document.getElementById("participant-input")?.value.trim() || state.participantDraft.trim();
+    if (originalText.length < 5) throw new Error("请先写下这位参与者的观点。");
     const participant = state.decision.participants.find((item) => item.id === button.dataset.participantId);
     if (!participant) throw new Error("没有找到这位参与者。");
+    const structured = viewpointFromForm();
+    if (!structured.goal || !structured.position || !structured.underlyingNeed) throw new Error("请先检查 AI 整理的目标、当前想法和真正关心的事。");
     state.busy = "participant"; render();
-    try { await postEvent("participant_confirmed", { participantId: participant.id, text }, participant.name); state.participantDraft = ""; go("overview"); }
+    try { await postEvent("participant_confirmed", { participantId: participant.id, originalText, structured }, participant.name); state.participantDraft = ""; go("overview"); }
+    finally { state.busy = ""; render(); }
+    return;
+  }
+  if (action === "prepare-brief") {
+    state.busy = "brief"; state.error = ""; render();
+    try { await runAiTask("brief"); go("brief"); }
+    finally { state.busy = ""; render(); }
+    return;
+  }
+  if (action === "confirm-brief") {
+    const brief = briefFromForm();
+    if (!brief.commonGoal || !brief.decisionQuestion || brief.participantSummaries.length < 2) throw new Error("请先检查共同目标、需要决定的问题和各方重点。");
+    state.busy = "brief-confirm"; state.error = ""; render();
+    try { await postEvent("brief_confirmed", { brief }, state.decision.ownerName); go("overview"); }
     finally { state.busy = ""; render(); }
     return;
   }
@@ -584,7 +724,13 @@ async function handleAction(action, button) {
     finally { state.busy = ""; render(); }
     return;
   }
-  if (action === "triage-decision") { await postEvent("triage_decided", { outcome: button.dataset.outcome }); return go(button.dataset.outcome === "proceed" ? "conflict" : "triage"); }
+  if (action === "triage-decision") {
+    const outcome = button.dataset.outcome;
+    const note = document.getElementById("triage-note")?.value.trim() || "";
+    if (["defer", "reject"].includes(outcome) && note.length < 5) throw new Error("请说明暂缓或结束讨论的原因。");
+    await postEvent("triage_decided", { outcome, note });
+    return go(["proceed", "need_evidence"].includes(outcome) ? "conflict" : "triage");
+  }
   if (action === "save-clarifications") {
     const answers = [...document.querySelectorAll("[data-question-id]")].map((input) => ({ questionId: input.dataset.questionId, answer: input.value.trim() })).filter((item) => item.answer);
     if (!answers.length) throw new Error("请至少回答一个问题。");

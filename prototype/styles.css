@@ -545,6 +545,24 @@ textarea {
 .next-step-panel p:last-child { margin-bottom: 0; }
 .role-context { display: flex; align-items: center; gap: 13px; margin-bottom: 16px; }
 .role-context p { margin: 2px 0 0; }
+.participant-composer textarea { min-height: 126px; }
+.structured-editor h2 { margin-bottom: 4px; font-size: 24px; }
+.viewpoint-core-grid, .brief-core-grid, .viewpoint-detail-grid, .brief-detail-grid, .participant-summary-grid {
+  display: grid;
+  gap: 12px;
+}
+.viewpoint-core-grid, .brief-core-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); margin-top: 18px; }
+.viewpoint-detail-grid, .brief-detail-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); margin-top: 12px; }
+.structured-field { display: grid; align-content: start; gap: 7px; }
+.structured-field > span { font-size: 14px; font-weight: 760; }
+.structured-field > small { margin-top: -3px; color: var(--muted); }
+.structured-field.wide { grid-column: 1 / -1; }
+.structured-field .compact-textarea { width: 100%; min-height: 82px; margin: 0; background: #fbfcfe; resize: vertical; }
+.participant-summary-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); margin: 18px 0; }
+.participant-summary { padding: 14px; border: 1px solid var(--soft-line); border-radius: 10px; background: var(--canvas); }
+.participant-summary p { margin: 7px 0 0; font-size: 14px; }
+.participant-summary span { color: var(--muted); font-weight: 700; }
+.shared-brief > .structured-field { margin-top: 14px; }
 .demand-card { display: grid; grid-template-columns: 64px 1fr; gap: 20px; align-items: start; }
 .demand-card h2 { font-size: 25px; }
 .demand-card p:last-child { margin-bottom: 0; }
@@ -691,8 +709,13 @@ textarea {
 .metric-dots i.filled { background: var(--blue); }
 .proposal-note span { color: var(--muted); font-size: 13px; font-weight: 700; }
 .proposal-note p { margin: 3px 0 0; color: var(--ink); }
+.proposal-insight { margin: 10px 0 2px; padding: 11px 12px; border-radius: 9px; color: #20448f; background: var(--blue-soft); }
+.proposal-insight span { font-size: 12px; font-weight: 800; }
+.proposal-insight p { margin: 3px 0 0; color: var(--ink); font-size: 14px; }
 .proposal-details { margin-bottom: 16px; }
 .proposal-details p { margin: 8px 0 0; font-size: 14px; }
+.proposal-detail-block { margin-top: 10px; font-size: 14px; }
+.proposal-detail-block ol { display: grid; gap: 5px; margin: 6px 0 0; padding-left: 21px; }
 .check-summary { display: grid; grid-template-columns: 36px 1fr; gap: 12px; align-items: start; }
 .check-summary p { margin: 3px 0 0; }
 .check-mark { display: grid; place-items: center; width: 34px; height: 34px; border-radius: 50%; color: var(--green); background: var(--green-soft); font-weight: 800; }
@@ -762,7 +785,7 @@ textarea {
   .action-reason { text-align: left; }
   .review-row { grid-template-columns: 1fr; }
   .review-choice-grid { grid-template-columns: 1fr; }
-  .analysis-columns, .record-layout { grid-template-columns: 1fr; }
+  .analysis-columns, .record-layout, .viewpoint-core-grid, .brief-core-grid, .viewpoint-detail-grid, .brief-detail-grid, .participant-summary-grid { grid-template-columns: 1fr; }
   .progress-panel, .demand-card { grid-template-columns: 1fr; }
   .next-step-panel { align-items: stretch; flex-direction: column; }
   .global-notice { grid-template-columns: 1fr auto; padding: 10px 14px; }

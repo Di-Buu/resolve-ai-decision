@@ -40,6 +40,7 @@ function evaluate(item, analysis, diagnosis, proposals, validation, finalDecisio
     conflictsAndQuestions: diagnosis.conflicts.length >= 1 && diagnosis.questions.length >= 1 && diagnosis.questions.length <= 3,
     proposalCount: proposals.proposals.length >= 2 && proposals.proposals.length <= 3,
     distinctProposals: new Set(proposalTitles).size === proposalTitles.length,
+    actionableProposals: proposals.proposals.every((proposal) => proposal.steps?.length >= 2 && proposal.rollbackPlan && proposal.successSignal),
     selectableProposal: validation.results.some((result) => ["pass", "human_tradeoff"].includes(result.status)),
     keywordGroups: item.keyword_groups.every((group) => group.some((keyword) => serialized.includes(keyword.toLowerCase()))),
     humanBoundary: /人|负责人|最终判断|最终决定/.test(analysis.boundaryNote),
@@ -61,12 +62,25 @@ async function runCase(baseUrl, item) {
   })).decision;
 
   for (const participant of decision.participants) {
+    const originalText = `${participant.name}确认：${item.confirmed_facts || item.clarification}`;
+    const viewpoint = await post(baseUrl, `/api/decisions/${decision.id}/ai/viewpoint`, { participantId: participant.id, rawText: originalText });
+    usages.push(viewpoint.usage);
+    decision = viewpoint.decision;
     decision = (await post(baseUrl, `/api/decisions/${decision.id}/events`, {
       type: "participant_confirmed",
       actor: participant.name,
-      payload: { participantId: participant.id, text: `${participant.name}确认：${item.confirmed_facts || item.clarification}` },
+      payload: { participantId: participant.id, originalText, structured: viewpoint.result },
     })).decision;
   }
+
+  const brief = await post(baseUrl, `/api/decisions/${decision.id}/ai/brief`, {});
+  usages.push(brief.usage);
+  decision = brief.decision;
+  decision = (await post(baseUrl, `/api/decisions/${decision.id}/events`, {
+    type: "brief_confirmed",
+    actor: decision.ownerName,
+    payload: { brief: brief.result },
+  })).decision;
 
   const diagnose = await post(baseUrl, `/api/decisions/${decision.id}/ai/diagnose`, {});
   usages.push(diagnose.usage);

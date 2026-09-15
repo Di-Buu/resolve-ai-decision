@@ -7,6 +7,7 @@ const { sampleDecision } = require("./seed");
 const STAGES = ["collect", "triage", "conflict", "clarify", "proposals", "review", "final"];
 const EVENT_TYPES = new Set([
   "participant_confirmed",
+  "brief_confirmed",
   "triage_decided",
   "stage_changed",
   "clarification_answered",
@@ -42,6 +43,54 @@ function parseJson(value, fallback = {}) {
   } catch {
     return fallback;
   }
+}
+
+function cleanText(value, label) {
+  const text = String(value || "").trim();
+  if (text.length < 2) throw new Error(`请先填写完整的${label}。`);
+  return text;
+}
+
+function cleanTextList(value, maxItems = 6) {
+  if (!Array.isArray(value)) return [];
+  return value.map((item) => String(item || "").trim()).filter(Boolean).slice(0, maxItems);
+}
+
+function normalizeViewpoint(value) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("请先检查 AI 整理的观点。");
+  return {
+    goal: cleanText(value.goal, "想达到的结果"),
+    position: cleanText(value.position, "当前想法"),
+    underlyingNeed: cleanText(value.underlyingNeed, "真正关心的事"),
+    nonNegotiables: cleanTextList(value.nonNegotiables, 4),
+    negotiables: cleanTextList(value.negotiables, 4),
+    evidence: cleanTextList(value.evidence, 4),
+    assumptions: cleanTextList(value.assumptions, 4),
+    openQuestions: cleanTextList(value.openQuestions, 3),
+  };
+}
+
+function normalizeBrief(value) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("请先检查共同问题说明。");
+  const participantSummaries = Array.isArray(value.participantSummaries)
+    ? value.participantSummaries.slice(0, 6).map((item) => ({
+        participant: cleanText(item?.participant, "参与者"),
+        priority: cleanText(item?.priority, "参与者最在意的事"),
+        concern: cleanText(item?.concern, "参与者顾虑"),
+      }))
+    : [];
+  if (participantSummaries.length < 2) throw new Error("请先让共同问题说明覆盖主要参与者。");
+  return {
+    commonGoal: cleanText(value.commonGoal, "共同目标"),
+    decisionQuestion: cleanText(value.decisionQuestion, "需要决定的问题"),
+    participantSummaries,
+    agreements: cleanTextList(value.agreements, 5),
+    disagreements: cleanTextList(value.disagreements, 5),
+    nonNegotiables: cleanTextList(value.nonNegotiables, 6),
+    preferences: cleanTextList(value.preferences, 6),
+    evidenceGaps: cleanTextList(value.evidenceGaps, 4),
+    boundaryNote: cleanText(value.boundaryNote, "仍需人工判断的内容"),
+  };
 }
 
 function createDatabase(options = {}) {
@@ -153,6 +202,15 @@ function createDatabase(options = {}) {
   function latestArtifact(decisionId, type) {
     const row = db.prepare("SELECT payload_json FROM artifacts WHERE decision_id = ? AND type = ? ORDER BY version DESC LIMIT 1").get(decisionId, type);
     return row ? parseJson(row.payload_json) : null;
+  }
+
+  function latestArtifactRecord(decisionId, type) {
+    const row = db.prepare("SELECT status, payload_json FROM artifacts WHERE decision_id = ? AND type = ? ORDER BY version DESC LIMIT 1").get(decisionId, type);
+    return row ? { status: row.status, payload: parseJson(row.payload_json) } : null;
+  }
+
+  function artifactIsConfirmed(decisionId, type) {
+    return latestArtifactRecord(decisionId, type)?.status === "confirmed";
   }
 
   function allParticipantsConfirmed(decisionId) {
@@ -323,7 +381,7 @@ function createDatabase(options = {}) {
   }
 
   const addEventTx = db.transaction((decisionId, event) => {
-    const decision = db.prepare("SELECT id, owner_name, current_stage FROM decisions WHERE id = ?").get(decisionId);
+    const decision = db.prepare("SELECT id, owner_name, status, current_stage FROM decisions WHERE id = ?").get(decisionId);
     if (!decision) return null;
     if (!EVENT_TYPES.has(event.type)) throw new Error("不支持的操作类型。");
     const payload = event.payload && typeof event.payload === "object" ? event.payload : {};
@@ -336,23 +394,41 @@ function createDatabase(options = {}) {
       if (!participant) throw new Error("没有找到该参与者。");
       const participantName = db.prepare("SELECT name FROM participants WHERE id = ?").get(payload.participantId)?.name;
       if (actor !== participantName) throw new Error("只有这位参与者本人可以确认观点。");
-      if (String(payload.text || "").trim().length < 5) throw new Error("请先写下这位参与者的观点。");
+      const originalText = String(payload.originalText || payload.text || "").trim();
+      if (originalText.length < 5) throw new Error("请先写下这位参与者的观点。");
+      const structured = normalizeViewpoint(payload.structured);
       db.prepare("UPDATE participants SET submission_status = 'confirmed', confirmed_at = ? WHERE id = ?").run(createdAt, payload.participantId);
-      saveArtifact(decisionId, `viewpoint:${payload.participantId}`, { text: String(payload.text || "").trim(), participantId: payload.participantId }, "confirmed");
+      saveArtifact(decisionId, `viewpoint:${payload.participantId}`, { participantId: payload.participantId, originalText, ...structured }, "confirmed");
+      const existingBrief = latestArtifactRecord(decisionId, "decision_brief");
+      if (existingBrief?.status === "confirmed") {
+        saveArtifact(decisionId, "decision_brief", { ...existingBrief.payload, needsRefresh: true }, "draft");
+      }
+    }
+    if (event.type === "brief_confirmed") {
+      if (decision.current_stage !== "collect") throw new Error("当前进度不能再确认共同问题。");
+      if (actor !== decision.owner_name) throw new Error("只有决策负责人可以确认共同问题。");
+      if (!allParticipantsConfirmed(decisionId)) throw new Error("还有参与者尚未确认观点。");
+      saveArtifact(decisionId, "decision_brief", normalizeBrief(payload.brief), "confirmed");
     }
     if (event.type === "stage_changed") {
       if (!STAGES.includes(payload.stage)) throw new Error("未知的决策阶段。");
       if (actor !== "Resolve") throw new Error("只有系统可以更新决策进度。");
+      if (decision.status === "needs_evidence" && ["proposals", "review", "final"].includes(payload.stage)) throw new Error("请先补充负责人要求的依据。");
+      if (["deferred", "rejected"].includes(decision.status) && payload.stage !== "triage") throw new Error("请先由负责人重新开始讨论。");
       assertStageTransition(decisionId, payload.stage);
       db.prepare("UPDATE decisions SET current_stage = ?, updated_at = ? WHERE id = ?").run(payload.stage, createdAt, decisionId);
     }
     if (event.type === "triage_decided") {
-      if (decision.current_stage !== "triage") throw new Error("当前进度还不能判断是否继续。");
+      const revisingEvidenceDecision = decision.status === "needs_evidence" && decision.current_stage === "conflict";
+      if (decision.current_stage !== "triage" && !revisingEvidenceDecision) throw new Error("当前进度还不能判断是否继续。");
       if (actor !== decision.owner_name) throw new Error("只有决策负责人可以判断是否继续。");
       const outcome = ["proceed", "need_evidence", "defer", "reject"].includes(payload.outcome) ? payload.outcome : "proceed";
-      saveArtifact(decisionId, "triage_decision", { outcome, note: String(payload.note || "").trim() }, "confirmed");
-      const nextStage = outcome === "proceed" ? "conflict" : "triage";
-      db.prepare("UPDATE decisions SET current_stage = ?, updated_at = ? WHERE id = ?").run(nextStage, createdAt, decisionId);
+      const note = String(payload.note || "").trim();
+      if (["defer", "reject"].includes(outcome) && note.length < 5) throw new Error("请说明暂缓或结束讨论的原因。");
+      saveArtifact(decisionId, "triage_decision", { outcome, note }, "confirmed");
+      const nextStage = ["proceed", "need_evidence"].includes(outcome) ? "conflict" : "triage";
+      const status = outcome === "defer" ? "deferred" : outcome === "reject" ? "rejected" : outcome === "need_evidence" ? "needs_evidence" : "active";
+      db.prepare("UPDATE decisions SET status = ?, current_stage = ?, updated_at = ? WHERE id = ?").run(status, nextStage, createdAt, decisionId);
     }
     if (event.type === "clarification_answered") {
       if (!["conflict", "clarify", "review"].includes(decision.current_stage)) throw new Error("当前进度还不能补充信息。");
@@ -360,13 +436,15 @@ function createDatabase(options = {}) {
         ? payload.answers.map((item) => ({ questionId: String(item.questionId || ""), answer: String(item.answer || "").trim() })).filter((item) => item.answer)
         : [{ questionId: payload.questionId, answer: String(payload.answer || "").trim() }];
       saveArtifact(decisionId, "clarification", { answers, owner: actor }, "confirmed");
-      db.prepare("UPDATE decisions SET current_stage = 'clarify', updated_at = ? WHERE id = ?").run(createdAt, decisionId);
+      db.prepare("UPDATE decisions SET status = 'active', current_stage = 'clarify', updated_at = ? WHERE id = ?").run(createdAt, decisionId);
     }
     if (event.type === "proposal_selected") {
       if (actor !== decision.owner_name) throw new Error("只有决策负责人可以选择方案。");
       if (!allParticipantsConfirmed(decisionId)) throw new Error("还有参与者尚未确认观点。");
       assertStageTransition(decisionId, "review");
       const proposalId = String(payload.proposalId || "");
+      const invalidations = latestArtifact(decisionId, "proposal_invalidations");
+      if (invalidations?.proposalIds?.includes(proposalId)) throw new Error("新的信息已经让这个方案失效，请选择其他方案。");
       const validation = latestArtifact(decisionId, "validation");
       const result = validation?.results?.find((item) => item.proposalId === proposalId);
       if (!result || !["pass", "human_tradeoff"].includes(result.status)) throw new Error("这个方案还没有通过检查，暂时不能选择。");
@@ -407,7 +485,14 @@ function createDatabase(options = {}) {
       if (decision.current_stage !== "review") throw new Error("当前进度还不能处理方案异议。");
       if (actor !== "Resolve") throw new Error("只有系统可以保存异议分析。");
       if (!latestArtifact(decisionId, "objection")) throw new Error("请先提交需要处理的异议。");
-      saveArtifact(decisionId, "objection_analysis", payload.analysis || {}, "confirmed");
+      const analysis = payload.analysis || {};
+      saveArtifact(decisionId, "objection_analysis", analysis, "confirmed");
+      const previousInvalidations = latestArtifact(decisionId, "proposal_invalidations") || {};
+      const affectedProposalIds = Array.isArray(analysis.affectedProposalIds) ? analysis.affectedProposalIds.map(String) : [];
+      const proposalIds = [...new Set([...(previousInvalidations.proposalIds || []), ...affectedProposalIds])];
+      const reasons = { ...(previousInvalidations.reasons || {}) };
+      for (const proposalId of affectedProposalIds) reasons[proposalId] = String(analysis.summary || "新的信息已经让这个方案失效。");
+      saveArtifact(decisionId, "proposal_invalidations", { proposalIds, reasons }, "confirmed");
     }
     if (event.type === "final_confirmed") {
       if (decision.current_stage !== "review") throw new Error("当前进度还不能确认最终决定。");
@@ -420,6 +505,8 @@ function createDatabase(options = {}) {
       const validation = latestArtifact(decisionId, "validation");
       const selectedResult = validation?.results?.find((item) => item.proposalId === selection.proposalId);
       if (!selectedResult || !["pass", "human_tradeoff"].includes(selectedResult.status)) throw new Error("所选方案没有通过检查，暂时不能确认。");
+      const invalidations = latestArtifact(decisionId, "proposal_invalidations");
+      if (invalidations?.proposalIds?.includes(selection.proposalId)) throw new Error("新的信息已经让当前方案失效，请先重新选择。");
       const storedObjection = latestArtifact(decisionId, "objection");
       const storedObjectionAnalysis = latestArtifact(decisionId, "objection_analysis");
       const objection = storedObjection?.active === false ? null : storedObjection;
@@ -458,6 +545,8 @@ function createDatabase(options = {}) {
     addEvent,
     saveArtifact,
     latestArtifact,
+    latestArtifactRecord,
+    artifactIsConfirmed,
     allParticipantsConfirmed,
     allParticipantsReviewed,
     logAiRun,

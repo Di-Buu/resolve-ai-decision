@@ -112,13 +112,16 @@ function createServer(options = {}) {
         return sendJson(response, 200, { decision });
       }
 
-      const aiTaskMatch = url.pathname.match(/^\/api\/decisions\/([^/]+)\/ai\/(diagnose|propose|validate|objection)$/);
+      const aiTaskMatch = url.pathname.match(/^\/api\/decisions\/([^/]+)\/ai\/(viewpoint|brief|diagnose|propose|validate|objection)$/);
       if (request.method === "POST" && aiTaskMatch) {
         const decisionId = decodeURIComponent(aiTaskMatch[1]);
         const task = aiTaskMatch[2];
+        const body = await readJson(request);
         const snapshot = database.getDecision(decisionId);
         if (!snapshot) return sendJson(response, 404, { code: "NOT_FOUND", message: "没有找到这个决策。" });
         const allowedStages = {
+          viewpoint: ["collect"],
+          brief: ["collect"],
           diagnose: ["collect"],
           propose: ["conflict", "clarify", "proposals"],
           validate: ["proposals"],
@@ -127,8 +130,23 @@ function createServer(options = {}) {
         if (!allowedStages[task].includes(snapshot.currentStage)) {
           return sendJson(response, 409, { code: "STAGE_NOT_READY", message: "当前进度还不能进行这项 AI 分析。" });
         }
+        let taskContext = {};
+        if (task === "viewpoint") {
+          const participantId = String(body.participantId || "");
+          const rawText = String(body.rawText || "").trim();
+          const participant = snapshot.participants.find((item) => item.id === participantId);
+          if (!participant) return sendJson(response, 404, { code: "PARTICIPANT_NOT_FOUND", message: "没有找到这位参与者。" });
+          if (rawText.length < 5) return sendJson(response, 400, { code: "VIEWPOINT_REQUIRED", message: "请先写下这位参与者的观点。" });
+          taskContext = { participant: { id: participant.id, name: participant.name, role: participant.role }, rawText };
+        }
+        if (task === "brief" && snapshot.participants.some((item) => item.submissionStatus !== "confirmed")) {
+          return sendJson(response, 409, { code: "PARTICIPANTS_PENDING", message: "还有参与者尚未确认观点。" });
+        }
         if (task === "diagnose" && snapshot.participants.some((item) => item.submissionStatus !== "confirmed")) {
           return sendJson(response, 409, { code: "PARTICIPANTS_PENDING", message: "还有参与者尚未确认观点。" });
+        }
+        if (task === "diagnose" && !database.artifactIsConfirmed(decisionId, "decision_brief")) {
+          return sendJson(response, 409, { code: "BRIEF_REQUIRED", message: "请先由负责人确认大家共同要解决的问题。" });
         }
         if (task === "propose" && !snapshot.artifacts.some((item) => item.type === "diagnosis")) {
           return sendJson(response, 409, { code: "DIAGNOSIS_REQUIRED", message: "请先完成需求和分歧梳理。" });
@@ -142,18 +160,40 @@ function createServer(options = {}) {
         const health = getAiHealth();
         const startedAt = Date.now();
         try {
-          const result = await runDecisionTask(task, snapshot);
-          const artifactType = task === "diagnose" ? "diagnosis" : task === "propose" ? "proposals" : task === "validate" ? "validation" : "objection_analysis";
-          database.saveArtifact(decisionId, artifactType, result.result, "draft");
-          const stage = task === "diagnose" ? "triage" : task === "propose" || task === "validate" ? "proposals" : "review";
-          database.addEvent(decisionId, { type: "stage_changed", actor: "Resolve", payload: { stage } });
+          const result = await runDecisionTask(task, snapshot, taskContext);
+          const artifactType = task === "viewpoint"
+            ? `viewpoint_draft:${taskContext.participant.id}`
+            : task === "brief"
+              ? "decision_brief"
+              : task === "diagnose"
+                ? "diagnosis"
+                : task === "propose"
+                  ? "proposals"
+                  : task === "validate"
+                    ? "validation"
+                    : "objection_analysis";
+          const artifactPayload = task === "viewpoint" ? { participantId: taskContext.participant.id, originalText: taskContext.rawText, ...result.result } : result.result;
+          if (task === "objection") {
+            database.addEvent(decisionId, { type: "objection_processed", actor: "Resolve", payload: { analysis: artifactPayload } });
+          } else {
+            database.saveArtifact(decisionId, artifactType, artifactPayload, "draft");
+          }
+          if (task === "propose") {
+            database.saveArtifact(decisionId, "proposal_invalidations", { proposalIds: [], reasons: {} }, "draft");
+            database.saveArtifact(decisionId, "validation", { summary: "候选方案已经更新，需要重新检查。", results: [] }, "draft");
+          }
+          const stage = task === "diagnose" ? "triage" : task === "propose" || task === "validate" ? "proposals" : task === "objection" ? "review" : null;
+          if (stage && task !== "objection") database.addEvent(decisionId, { type: "stage_changed", actor: "Resolve", payload: { stage } });
           database.logAiRun(decisionId, task, { provider: result.provider, model: result.model, status: "success", durationMs: Date.now() - startedAt });
-          return sendJson(response, 200, { result: result.result, decision: database.getDecision(decisionId), usage: result.usage });
+          return sendJson(response, 200, { result: artifactPayload, decision: database.getDecision(decisionId), usage: result.usage });
         } catch (error) {
           database.logAiRun(decisionId, task, { provider: health.provider, model: health.model, status: "failed", durationMs: Date.now() - startedAt, errorCode: error.code || "AI_REQUEST_FAILED" });
           console.error(`AI ${task} failed:`, error.message);
           const status = error.code === "AI_NOT_CONFIGURED" ? 503 : 502;
-          return sendJson(response, status, { code: error.code || "AI_REQUEST_FAILED", message: "AI 暂时不可用，你的内容已经保存。" });
+          const message = task === "viewpoint"
+            ? "AI 暂时没有完成整理，请重试；当前页面会保留你的原话。"
+            : "AI 暂时不可用，已经保存的决策内容不会丢失。";
+          return sendJson(response, status, { code: error.code || "AI_REQUEST_FAILED", message });
         }
       }
 
@@ -163,7 +203,7 @@ function createServer(options = {}) {
       }
       return serveStatic(request, response, url);
     } catch (error) {
-      const expected = ["请先", "请选择", "请说明", "当前进度", "还有参与者", "还有一条异议", "没有找到", "不支持", "未知的", "这个方案", "所选方案", "新的异议", "最终决定", "只有"].some((prefix) => error.message.startsWith(prefix));
+      const expected = ["请先", "请选择", "请说明", "当前进度", "还有参与者", "还有一条异议", "没有找到", "不支持", "未知的", "这个方案", "所选方案", "新的异议", "新的信息", "最终决定", "只有"].some((prefix) => error.message.startsWith(prefix));
       if (!expected) console.error("Request failed:", error.message);
       return sendJson(response, error.statusCode || (expected ? 409 : 500), { code: "REQUEST_FAILED", message: error.statusCode === 400 || expected ? error.message : "暂时无法完成操作，请稍后重试。" });
     }
